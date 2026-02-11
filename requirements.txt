@@ -1,0 +1,11 @@
+# Core
+rich
+prompt_toolkit
+litellm
+cryptography
+trafilatura
+markitdown[all]
+requests
+feedparser
+tiktoken
+phue
