@@ -8,7 +8,7 @@ Centralized configuration for all system components.
 # ============================================================================
 
 # Main LLM for conversation
-llm = "openai/gpt-5.2"  # Latest with adaptive reasoning (minimal to xhigh)
+llm = "openai/gpt-5.1"  # Latest with adaptive reasoning (minimal to xhigh)
 #llm = "openai/gpt-5"  # $1.25/$10 per MTok - reasoning (minimal/low/medium/high)
 #llm = "openai/gpt-4.1"  # $2/$8 per MTok - 1M context window
 #llm = "openai/o4-mini"  # $1.10/$4.40 per MTok - fast reasoning
