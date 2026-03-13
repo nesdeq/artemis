@@ -9,13 +9,11 @@ import tiktoken
 from typing import Dict, List, Optional, Tuple
 from concurrent.futures import as_completed
 from datetime import datetime
+import _config
 from .Agent import Agent
 from tools.utils import contains_urls, extract_json, fetch_and_extract
 
-# Configure logger
 logger = logging.getLogger(__name__)
-
-import _config
 
 # Config
 MAX_RESULTS_PER_SEARCH = _config.max_search_results

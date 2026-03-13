@@ -134,8 +134,7 @@ class ArtemisCore:
         """Process a single agent and return (enrichment, metadata)."""
         try:
             agent_enrichment = await asyncio.to_thread(agent.process, input_text, last_response)
-            agent_meta = await asyncio.to_thread(agent.get_metadata)
-            return agent_enrichment, agent_meta
+            return agent_enrichment, agent.get_metadata()
         except Exception as e:
             if _config.debug:
                 print(f"Error processing agent {agent.name}: {str(e)}")

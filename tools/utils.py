@@ -9,6 +9,8 @@ import base64
 import io
 import os
 from typing import Optional, Any, List
+from urllib.parse import urlparse
+
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -79,21 +81,30 @@ def get_trafilatura_config():
 def fetch_and_extract(url: str, favor_precision: bool = False,
                       include_links: bool = False) -> Optional[dict]:
     """
-    Fetch a URL and extract its main content using trafilatura.
+    Fetch a URL and extract its main content using trafilatura,
+    falling back to Jina Reader API for JS-rendered pages.
 
     Returns a dict with keys: title, text, author, date, description, hostname
     or None if extraction fails.
     """
+    result = _fetch_with_trafilatura(url, favor_precision, include_links)
+    if result:
+        return result
+
+    return _fetch_with_jina(url)
+
+
+def _fetch_with_trafilatura(url: str, favor_precision: bool = False,
+                            include_links: bool = False) -> Optional[dict]:
+    """Extract content using trafilatura (fast, no JS support)."""
     import trafilatura
 
     config = get_trafilatura_config()
 
-    # Fetch HTML (trafilatura handles encoding, retries, size limits)
     html = trafilatura.fetch_url(url, config=config)
     if not html:
         return None
 
-    # Extract structured content
     doc = trafilatura.bare_extraction(
         html,
         url=url,
@@ -119,16 +130,38 @@ def fetch_and_extract(url: str, favor_precision: bool = False,
     }
 
 
+def _fetch_with_jina(url: str) -> Optional[dict]:
+    """Fallback: extract content via Jina Reader API (handles JS-rendered pages)."""
+    import requests
+
+    try:
+        resp = requests.get(
+            f"https://r.jina.ai/{url}",
+            headers={"Accept": "application/json", "User-Agent": DEFAULT_USER_AGENT},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json().get("data", {})
+        text = data.get("content", "")
+        if not text:
+            return None
+
+        return {
+            "title": data.get("title", ""),
+            "text": text,
+            "author": data.get("author", ""),
+            "date": data.get("publishedTime", ""),
+            "description": data.get("description", ""),
+            "hostname": urlparse(url).hostname or "",
+        }
+    except Exception:
+        return None
+
+
 def clean_html(html_content: str) -> str:
-    """
-    Convert HTML to clean markdown text using MarkItDown.
-
-    Args:
-        html_content: HTML content to convert
-
-    Returns:
-        Clean markdown text
-    """
+    """Convert HTML to clean text via MarkItDown, falling back to regex strip."""
     if not html_content or not html_content.strip():
         return ""
 
@@ -149,43 +182,17 @@ _URL_PATTERN = re.compile(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(
 
 
 def extract_urls(text: str) -> List[str]:
-    """
-    Extract URLs from text.
-
-    Args:
-        text: Text to extract URLs from
-
-    Returns:
-        List of extracted URLs
-    """
+    """Extract all URLs from text."""
     return _URL_PATTERN.findall(text)
 
 
 def contains_urls(text: str) -> bool:
-    """
-    Check if text contains URLs.
-
-    Args:
-        text: Text to check
-
-    Returns:
-        True if URLs found, False otherwise
-    """
+    """Check if text contains any URLs."""
     return bool(_URL_PATTERN.search(text))
 
 
 def derive_encryption_key(username: str) -> Optional[bytes]:
-    """
-    Derive encryption key using ENCKEY environment variable and username.
-
-    Used by PersonalInfoAgent and readpinf tool for encrypted storage.
-
-    Args:
-        username: Username to derive salt from
-
-    Returns:
-        Base64-encoded derived key or None if ENCKEY not set
-    """
+    """Derive Fernet key from ENCKEY env var + username salt. Returns None if ENCKEY not set."""
     enckey = os.environ.get("ENCKEY")
     if not enckey:
         return None
@@ -203,46 +210,18 @@ def derive_encryption_key(username: str) -> Optional[bytes]:
 
 
 def encrypt_data(data: dict, key: bytes) -> bytes:
-    """
-    Encrypt dictionary data using Fernet.
-
-    Args:
-        data: Dictionary to encrypt
-        key: Encryption key from derive_encryption_key()
-
-    Returns:
-        Encrypted bytes
-    """
+    """Encrypt dict to Fernet bytes."""
     json_data = json.dumps(data)
     return Fernet(key).encrypt(json_data.encode())
 
 
 def decrypt_data(encrypted: bytes, key: bytes) -> dict:
-    """
-    Decrypt Fernet-encrypted data back to dictionary.
-
-    Args:
-        encrypted: Encrypted bytes
-        key: Encryption key from derive_encryption_key()
-
-    Returns:
-        Decrypted dictionary
-    """
+    """Decrypt Fernet bytes back to dict."""
     return json.loads(Fernet(key).decrypt(encrypted).decode())
 
 
 def extract_json(text: str) -> Optional[Any]:
-    """
-    Extract and parse JSON from text that may contain other content.
-
-    Tries direct parsing first, then extracts JSON array or object via regex.
-
-    Args:
-        text: Text potentially containing JSON
-
-    Returns:
-        Parsed JSON data or None if parsing fails
-    """
+    """Extract and parse JSON from text. Tries direct parse, then regex for arrays/objects."""
     # Try direct JSON parsing first
     try:
         return json.loads(text)
