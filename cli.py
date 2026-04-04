@@ -107,15 +107,14 @@ class ArtemisAI:
 
     def _get_thinking_spinner(self) -> Align:
         """Generate an elegant thinking spinner with text."""
-        with Progress(
+        progress = Progress(
             SpinnerColumn(spinner_name="dots", style=self.THEME["secondary"]),
             TextColumn(f"[bold {self.THEME['secondary']}]Thinking...[/bold {self.THEME['secondary']}]"),
-            transient=True, 
+            transient=True,
             expand=False,
-        ) as progress:
-            progress.add_task("Thinking", total=None)
-            # Just prepare the layout, don't actually run animation here
-            return Align.center(progress)
+        )
+        progress.add_task("Thinking", total=None)
+        return Align.center(progress)
     
     async def process_and_display_response(self, user_input: str) -> None:
         """
@@ -273,7 +272,7 @@ class ArtemisAI:
             filename = f"artemis_{timestamp}.md"
 
         # Ensure save directory exists
-        save_dir = Path(_config.save_directory)
+        save_dir = Path(_config.data_directory)
         save_dir.mkdir(parents=True, exist_ok=True)
 
         # Handle filename collision

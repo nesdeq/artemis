@@ -4,6 +4,7 @@ Core module for Artemis AI assistant.
 This module coordinates agent interactions, handles user queries, and manages context.
 """
 import json
+import random
 import datetime
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple, AsyncGenerator
@@ -90,12 +91,11 @@ class ArtemisCore:
 
     async def _get_snarky_welcome(self) -> str:
         """Get a snarky welcome message from the LLM."""
-        import random
         now = datetime.datetime.now()
         time_of_day = "morning" if 5 <= now.hour < 12 else "afternoon" if 12 <= now.hour < 18 else "evening"
 
         current_time = now.strftime("%A, %B %d, %Y %I:%M %p")
-        systemPrompt = "Respond in under 25 words and plain text."
+        system_prompt = "Respond in under 25 words and plain text."
         prompt_options = [
             f"Generate a short, witty, and slightly snarky welcome message. Current time: {current_time}, {time_of_day}.",
             f"Write a brief welcome message with attitude. It's {time_of_day}, {current_time}.",
@@ -106,7 +106,7 @@ class ArtemisCore:
         response = await asyncio.to_thread(
             self.llm.generate_single_response,
             prompt=random.choice(prompt_options),
-            system_prompt=systemPrompt
+            system_prompt=system_prompt
         )
 
         return response.strip().strip('"\'')

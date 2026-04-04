@@ -260,7 +260,7 @@ class LLMInterface:
 
         # Record token usage for cost tracking
         if hasattr(response, 'usage') and response.usage:
-            self._record_usage(
+            self.record_usage(
                 getattr(response.usage, 'prompt_tokens', 0),
                 getattr(response.usage, 'completion_tokens', 0)
             )
@@ -302,7 +302,7 @@ class LLMInterface:
     # Cost Tracking
     # =========================================================================
 
-    def _record_usage(self, input_tokens: int, output_tokens: int) -> None:
+    def record_usage(self, input_tokens: int, output_tokens: int) -> None:
         """
         Record token usage and calculate costs for this context.
 
@@ -337,16 +337,6 @@ class LLMInterface:
             self._session_costs[self.context]['output_tokens'] += output_tokens
             self._session_costs[self.context]['input_cost'] += input_cost
             self._session_costs[self.context]['output_cost'] += output_cost
-
-    def record_usage(self, input_tokens: int, output_tokens: int) -> None:
-        """
-        Public method to record token usage (for external callers like core.py).
-
-        Args:
-            input_tokens: Number of input/prompt tokens
-            output_tokens: Number of output/completion tokens
-        """
-        self._record_usage(input_tokens, output_tokens)
 
     @classmethod
     def get_session_costs(cls) -> Dict[str, Dict[str, Any]]:

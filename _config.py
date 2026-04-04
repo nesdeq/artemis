@@ -8,7 +8,7 @@ Centralized configuration for all system components.
 # ============================================================================
 
 # Main LLM for conversation
-llm = "openai/gpt-5.4"  # Latest with adaptive reasoning (minimal to xhigh)
+llm = "openai/gpt-5.1"  # Latest with adaptive reasoning (minimal to xhigh)
 #llm = "openai/gpt-5"  # $1.25/$10 per MTok - reasoning (minimal/low/medium/high)
 #llm = "openai/gpt-4.1"  # $2/$8 per MTok - 1M context window
 #llm = "openai/o4-mini"  # $1.10/$4.40 per MTok - fast reasoning
@@ -107,9 +107,6 @@ max_context_tokens = 250000
 # Max personal info entries to keep (PersonalInfoAgent)
 max_personal_entries = 150
 
-# HTTP request timeout (seconds)
-http_timeout = 10
-
 # Max conversation history (messages)
 max_conversation_history = 50
 
@@ -128,7 +125,6 @@ def _resolve_data_dir() -> _Path:
     return _Path.home() / ".artemis"
 
 data_directory = _resolve_data_dir()
-save_directory = data_directory
 
 
 # ============================================================================

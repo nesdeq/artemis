@@ -155,9 +155,12 @@ class DailyStoriesAgent(Agent):
         # Collect results as they complete
         stories = []
         for future in as_completed(futures):
-            feed_stories = future.result()
-            if feed_stories:
-                stories.extend(feed_stories)
+            try:
+                feed_stories = future.result(timeout=20)
+                if feed_stories:
+                    stories.extend(feed_stories)
+            except Exception as e:
+                logger.error(f"Error fetching feed: {e}")
         
         return stories
 

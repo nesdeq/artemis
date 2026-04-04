@@ -3,13 +3,12 @@ import logging
 from typing import Dict, List, Optional
 from concurrent.futures import as_completed
 
+import _config
 from .Agent import Agent
 from tools.utils import extract_urls, fetch_and_extract
 
 # Configure logger
 logger = logging.getLogger(__name__)
-
-import _config
 
 
 class URLReaderAgent(Agent):
