@@ -2,20 +2,16 @@
 import logging
 from typing import Optional
 
+import _config
 from .Agent import Agent
 
-# Configure logger
 logger = logging.getLogger(__name__)
 
 
 class DetectLanguageAgent(Agent):
     """Agent for detecting the language of user input text."""
 
-    def __init__(self, name: str, user: Optional[str] = None) -> None:
-        super().__init__(name, user)
-
     def should_process(self, user_input: str, last_response: Optional[str] = None) -> bool:
-        """Always runs."""
         return True
 
     def process(self, user_input: str, last_response: Optional[str] = None) -> str:
@@ -26,23 +22,25 @@ class DetectLanguageAgent(Agent):
             self.metadata["detected_language"] = "en"
             return "Your response/answer MUST use the language (ISO 639-1): en."
 
-        prompt = """Analyze the following text and determine its language.
-Respond with only the ISO 639-1 two-letter language code.
-If you cannot determine the language, respond with 'un' for unknown.
-
-Text to analyze: "{}"
-
-Language code:""".format(user_input)
+        prompt = (
+            "Analyze the following text and determine its language.\n"
+            "Respond with only the ISO 639-1 two-letter language code.\n"
+            "If you cannot determine the language, respond with 'un' for unknown.\n\n"
+            f"Text to analyze: \"{user_input}\"\n\n"
+            "Language code:"
+        )
 
         try:
-            detected_lang = self.llm.generate_single_response(prompt, max_tokens=64).strip().lower()
+            detected = self.llm.generate_single_response(
+                prompt, max_tokens=_config.lang_detect_max_tokens
+            ).strip().lower()
 
-            if not detected_lang or not detected_lang.isalpha() or len(detected_lang) != 2:
-                logger.warning(f"Invalid language code: {detected_lang}, defaulting to 'en'")
-                detected_lang = "en"
+            if not detected or not detected.isalpha() or len(detected) != 2:
+                logger.warning(f"Invalid language code: {detected}, defaulting to 'en'")
+                detected = "en"
 
-            self.metadata["detected_language"] = detected_lang
-            return f"Your response/answer MUST use the language (ISO 639-1): {detected_lang}."
+            self.metadata["detected_language"] = detected
+            return f"Your response/answer MUST use the language (ISO 639-1): {detected}."
 
         except Exception as e:
             logger.error(f"Error detecting language: {e}")

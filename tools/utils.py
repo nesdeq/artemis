@@ -8,7 +8,9 @@ import hashlib
 import base64
 import io
 import os
-from typing import Optional, Any, List
+import logging
+from concurrent.futures import as_completed, TimeoutError as FuturesTimeoutError
+from typing import Optional, Any, List, Callable, TypeVar
 from urllib.parse import urlparse
 
 
@@ -16,6 +18,11 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.fernet import Fernet
 from markitdown import MarkItDown
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+R = TypeVar("R")
 
 
 # =============================================================================
@@ -218,6 +225,37 @@ def encrypt_data(data: dict, key: bytes) -> bytes:
 def decrypt_data(encrypted: bytes, key: bytes) -> dict:
     """Decrypt Fernet bytes back to dict."""
     return json.loads(Fernet(key).decrypt(encrypted).decode())
+
+
+def parallel_map(items: List[T], fn: Callable[[T], Optional[R]], executor,
+                 timeout: float) -> List[R]:
+    """Run `fn` over `items` on `executor`, drop None results.
+
+    `timeout` is the wall-clock budget for the whole batch. Any future that
+    doesn't finish in time is cancelled and its slot is dropped.
+    """
+    if not items:
+        return []
+    futures = [executor.submit(fn, item) for item in items]
+    results: List[R] = []
+    try:
+        for future in as_completed(futures, timeout=timeout):
+            try:
+                r = future.result()
+                if r is not None:
+                    results.append(r)
+            except Exception as e:
+                logger.error(f"parallel_map task failed: {e}")
+    except FuturesTimeoutError:
+        unfinished = sum(1 for f in futures if not f.done())
+        logger.warning(
+            f"parallel_map: {timeout}s timeout reached, "
+            f"{unfinished}/{len(futures)} unfinished, returning partial"
+        )
+        for f in futures:
+            if not f.done():
+                f.cancel()
+    return results
 
 
 def extract_json(text: str) -> Optional[Any]:

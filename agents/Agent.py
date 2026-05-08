@@ -4,7 +4,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from llms.LLMInterface import LLMInterface
 import _config
-from tools.utils import clean_html
 
 
 class Agent:
@@ -20,8 +19,11 @@ class Agent:
     def __init__(self, name: Optional[str] = None, user: Optional[str] = None) -> None:
         self.name = name
         self.user = user
-        agent_ro = getattr(_config, 'agent_ro', None)
-        self.llm = LLMInterface(_config.agent_llm, reasoning_effort=agent_ro, context=name)
+        self.llm = LLMInterface(
+            _config.agent_llm,
+            reasoning_effort=getattr(_config, 'agent_ro', None),
+            context=name,
+        )
         self.metadata: Dict[str, Any] = {}
 
     def should_process(self, user_input: str, last_response: Optional[str] = None) -> bool:
@@ -34,22 +36,16 @@ class Agent:
 
     @classmethod
     def get_executor(cls) -> ThreadPoolExecutor:
-        if Agent._shared_executor is None:
-            Agent._shared_executor = ThreadPoolExecutor(max_workers=10)
-        return Agent._shared_executor
+        if cls._shared_executor is None:
+            cls._shared_executor = ThreadPoolExecutor(max_workers=_config.agent_executor_workers)
+        return cls._shared_executor
 
     @classmethod
     def shutdown(cls) -> None:
         """Shutdown shared executor."""
-        if Agent._shared_executor is not None:
-            Agent._shared_executor.shutdown(wait=True)
-            Agent._shared_executor = None
+        if cls._shared_executor is not None:
+            cls._shared_executor.shutdown(wait=True)
+            cls._shared_executor = None
 
     def get_metadata(self) -> Dict[str, Any]:
         return self.metadata
-
-    def clean_html(self, html_content: str) -> str:
-        return clean_html(html_content)
-
-    def summarize_content(self, content: str, max_words: int = 500) -> str:
-        return self.llm.summarize(content, max_words=max_words)

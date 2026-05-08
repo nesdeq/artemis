@@ -112,6 +112,52 @@ max_conversation_history = 50
 
 
 # ============================================================================
+# AGENT INTERNALS (timeouts, limits, prompt budgets)
+# ============================================================================
+
+# Concurrency
+agent_executor_workers = 10            # Shared thread pool for parallel agent I/O
+agent_process_timeout = 30             # Wall-clock budget for a single agent's process()
+
+# HTTP timeouts (seconds)
+search_request_timeout = 3             # SERP API per-request
+search_query_timeout = 3               # Per-query collation across SERP search types
+url_fetch_timeout = 15                 # Per-URL content fetch (OnlineSearch / ReadURLs)
+feed_fetch_timeout = 15                # Per-feed RSS HTTP request
+feed_result_timeout = 20               # Per-feed result collection from worker pool
+
+# SERP planning
+max_search_queries = 3                 # Hard cap on queries the planner may emit
+serp_results_cap = 20                  # Hard cap on the SERP `num` parameter
+
+# Agent prompt token budgets
+search_decision_max_tokens = 32        # `{"search":true|false}` classifier
+search_plan_max_tokens = 256           # Search plan JSON
+lang_detect_max_tokens = 64            # ISO 639-1 code response
+memory_extract_max_tokens = 512        # PersonalInfo extraction JSON
+memory_classify_max_tokens = 20        # PersonalInfo relationship classifier
+
+# Summarization
+default_summary_words = 500
+search_content_summary_words = 2000
+url_content_summary_words = 200
+
+# Reasoning model token floor
+# Reasoning tokens (invisible) count against max_completion_tokens.
+# Too low = empty response as all tokens go to reasoning.
+reasoning_model_min_tokens = 2048
+
+# Personal memory
+superseded_history_size = 50           # Keep last N superseded memories
+reinforcement_retention_bonus_days = 7 # Per-reinforcement retention extension
+
+# UI
+cli_panel_max_width = 100
+cli_cost_panel_max_width = 90
+cli_panel_padding = 4                  # Subtracted from term_width when sizing panels
+
+
+# ============================================================================
 # STORAGE & DATA
 # ============================================================================
 

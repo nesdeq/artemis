@@ -115,7 +115,7 @@ class PersonalInfoAgent(Agent):
         try:
             store = {
                 "memories": self.memories,
-                "superseded": self.superseded[-50:],  # Keep last 50 superseded
+                "superseded": self.superseded[-_config.superseded_history_size:],
             }
             with open(self.info_file, "wb") as f:
                 f.write(self._encrypt(store))
@@ -237,7 +237,9 @@ Context from assistant's last response: "{last_response or 'None'}"
 User input: "{user_input}"
 """
         try:
-            response = self.llm.generate_single_response(prompt, max_tokens=512)
+            response = self.llm.generate_single_response(
+                prompt, max_tokens=_config.memory_extract_max_tokens
+            )
             parsed = extract_json(response)
 
             if not isinstance(parsed, list):
@@ -327,7 +329,9 @@ What is the relationship?
 Return exactly one word: REINFORCEMENT, UPDATE, ELABORATION, or NEW"""
 
         try:
-            response = self.llm.generate_single_response(prompt, max_tokens=20)
+            response = self.llm.generate_single_response(
+                prompt, max_tokens=_config.memory_classify_max_tokens
+            )
             result = response.strip().upper()
             if result in ["REINFORCEMENT", "UPDATE", "ELABORATION", "NEW"]:
                 return result
@@ -405,7 +409,9 @@ Return exactly one word: REINFORCEMENT, UPDATE, ELABORATION, or NEW"""
                 age_days = (now - created).days
 
                 # Reinforced memories get extended retention
-                effective_retention = retention + (mem.get("reinforced", 0) * 7)
+                effective_retention = retention + (
+                    mem.get("reinforced", 0) * _config.reinforcement_retention_bonus_days
+                )
 
                 if age_days > effective_retention:
                     remove_ids.add(mem["id"])

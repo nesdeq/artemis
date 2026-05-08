@@ -5,8 +5,9 @@ Provides a command-line interface with rich text formatting, markdown rendering,
 and streaming responses with enhanced visual styling.
 """
 
-# Put logging disable at the very top before other imports
-import logging; logging.basicConfig(level=logging.CRITICAL); logging.getLogger().setLevel(logging.CRITICAL); logging.disable(logging.CRITICAL)
+# Silence library logging before any other imports.
+import logging
+logging.disable(logging.CRITICAL)
 
 import asyncio
 import os
@@ -34,7 +35,6 @@ from core import ArtemisCore
 from llms.LLMInterface import LLMInterface
 from tools.utils import UI_THEME, LOGO
 
-# Use centralized configuration
 REFRESH_RATE = _config.cli_refresh_rate
 
 
@@ -48,7 +48,10 @@ class ArtemisAI:
         self.core = ArtemisCore()
         self.console = Console()
         self.term_width = self.console.width
-        
+        self._panel_width = min(_config.cli_panel_max_width, self.term_width - _config.cli_panel_padding)
+        self._cost_panel_width = min(_config.cli_cost_panel_max_width, self.term_width - _config.cli_panel_padding)
+        self._thinking_spinner = self._build_thinking_spinner()
+
     def create_sources_table(self, agent_metadata: Dict[str, Any]) -> Optional[Panel]:
         """
         Create a formatted panel displaying agent sources and metadata.
@@ -85,7 +88,7 @@ class ArtemisAI:
             box=box.ROUNDED,
             padding=(1, 2),
             title_align="left",
-            width=min(100, self.term_width - 4)
+            width=self._panel_width,
         )
 
     def print_stats(self, input_tokens: int, output_tokens: int) -> None:
@@ -105,8 +108,8 @@ class ArtemisAI:
 
         self.console.print(stats_table)
 
-    def _get_thinking_spinner(self) -> Align:
-        """Generate an elegant thinking spinner with text."""
+    def _build_thinking_spinner(self) -> Align:
+        """Build the thinking spinner once. Reused across requests to avoid Progress re-creation."""
         progress = Progress(
             SpinnerColumn(spinner_name="dots", style=self.THEME["secondary"]),
             TextColumn(f"[bold {self.THEME['secondary']}]Thinking...[/bold {self.THEME['secondary']}]"),
@@ -115,7 +118,7 @@ class ArtemisAI:
         )
         progress.add_task("Thinking", total=None)
         return Align.center(progress)
-    
+
     async def process_and_display_response(self, user_input: str) -> None:
         """
         Process user input and stream response with live markdown rendering.
@@ -138,15 +141,10 @@ class ArtemisAI:
         output_tokens = 0
         first_chunk_received = False
         
-        # Set up a single live display for the entire response process
-        
-        # Panel width calculation (done once)
-        panel_width = min(100, self.term_width - 4)
-        
         # Function to create current display content
         def get_display():
             if not first_chunk_received:
-                return self._get_thinking_spinner()
+                return self._thinking_spinner
             elif response_text:
                 return Panel(
                     Markdown(response_text),
@@ -155,7 +153,7 @@ class ArtemisAI:
                     border_style=self.THEME["dim"],
                     box=box.ROUNDED,
                     padding=(1, 2),
-                    width=panel_width
+                    width=self._panel_width,
                 )
             else:
                 return ""
@@ -324,7 +322,7 @@ class ArtemisAI:
                 border_style=self.THEME["dim"],
                 box=box.ROUNDED,
                 padding=(1, 2),
-                width=min(100, self.term_width - 4)
+                width=self._panel_width,
             )
             self.console.print(save_panel)
             self.console.print("")
@@ -395,7 +393,7 @@ class ArtemisAI:
             border_style=self.THEME["dim"],
             box=box.ROUNDED,
             padding=(1, 2),
-            width=min(90, self.term_width - 4)
+            width=self._cost_panel_width,
         )
         self.console.print(cost_panel)
         self.console.print("")
