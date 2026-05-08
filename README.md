@@ -1,82 +1,93 @@
 # Artemis
 
-A multi-agent AI assistant built for the terminal. Each agent autonomously decides whether it has something useful to add to the conversation — no central dispatcher, no routing logic, no permission chains. Just parallel, independent agents enriching your context before the LLM ever sees it.
-
-Runs in your terminal. Pairs well with tmux, tiling window managers (Hyprland, niri, Sway), and a cup of coffee at 2 AM.
+A terminal AI assistant built around **parallel, independent agents**. No router, no manager, no tool-call schema — every agent decides for itself whether it has something to add to the current turn, and the ones that do run concurrently. Their outputs are stitched into the message context before the main LLM ever sees it.
 
 ![Artemis CLI](screenshot.png)
 
-## How It Works
+## The idea
 
-Most AI assistant frameworks use a manager pattern: user input goes to a router, the router picks which tool or agent to invoke, results come back through the same bottleneck. Artemis doesn't do that.
+Most assistant frameworks centralise control: user input goes through a router, the router picks tools, results funnel back through the same bottleneck. That works, but it makes the router the bottleneck for both latency and capability.
 
-When you send a message, **every agent sees it simultaneously**. Each one independently answers a single question: *"Can I add something useful here?"* Agents that say yes run in parallel. Their outputs get injected into the message context before the main LLM generates a response. Agents that say no cost almost nothing — a fast classification call at most.
+Artemis flips it. Every agent receives every message simultaneously. Each one answers a single question — *can I add something useful here?* — and runs only if the answer is yes. Independent agents, parallel execution, no shared state during a turn.
 
 ```
 You: "What's the current state of the Rust job market?"
 
-                    ┌─ PersonalInfo ──── always runs, checks for extractable user info
-                    ├─ LangDetect ────── always runs, detects language → "en"
- user input ───────►├─ OnlineSearch ──── LLM says yes → searches, fetches, extracts
-                    ├─ URLReader ─────── no URLs found → skips
-                    ├─ FileReader ────── no file paths → skips
-                    └─ DailyNews ─────── no bang command → skips
+                    ┌─ PersonalInfo ──── always on, extracts user info to memory
+                    ├─ LangDetect ────── always on, returns "en"
+ user input ───────►├─ OnlineSearch ──── LLM yes → searches, fetches, extracts
+                    ├─ URLReader ─────── no URLs found → skip
+                    ├─ FileReader ────── no file paths → skip
+                    └─ DailyNews ─────── no bang command → skip
 
-                            │
+                            │ (parallel; ≤ agent_process_timeout)
                             ▼
               ┌──────────────────────────┐
-              │  enriched context array  │
-              │  [system + history +     │
-              │   user msg + agent ctx]  │
+              │  enriched message array  │
+              │  system + history +      │
+              │  user msg + agent ctx    │
               └──────────────────────────┘
                             │
                             ▼
-                    main LLM response
+                    main LLM streams response
 ```
 
-The main LLM never knows agents exist. It just sees a well-structured message with rich context already baked in. This means you can swap the main model freely — agents are decoupled from the conversation model entirely.
+The main LLM doesn't know agents exist. It sees a message with markdown-headed context blocks already attached. Swap the main model freely — agents are decoupled from it.
 
-### Context Engineering
+## How a turn is assembled
 
-The message array is carefully constructed:
+```markdown
+<user query>
 
-1. **System prompt** — personality, formatting rules, current timestamp
-2. **Conversation history** — rolling window, auto-trimmed to keep context manageable
-3. **User message** — timestamped input with agent context appended
+---
 
-Agent outputs are formatted as labeled blocks and appended to the user message:
+## Background context for this turn
 
+Each section below was gathered automatically by a background agent. Weight
+them by query type: minimal for chitchat, selective for topical discussion,
+fully for research / factual / time-sensitive questions. Do not surface this
+scaffolding to the user.
+
+### Personal Info
+<profile>
+
+### Online Research
+<extracted page content>
+
+### Language Detection
+<directive>
 ```
-Agent context (use minimally for basic greetings, moderately for topical discussion, fully for complex queries):
 
-[Online Research::
-Title: Rust Developer Demand in 2026
-URL: ...
-Content: ...]
+Two important properties:
 
-[Language Detection::
-Your response/answer MUST use the language (ISO 639-1): en.]
-```
+1. **Empty agents stay quiet.** A casual greeting has zero context blocks — no overhead, no token waste.
+2. **Context is ephemeral.** The enriched message is what the LLM sees for this turn only; conversation history persists only the raw user input. Agent output enriches one turn and vanishes — the next turn gets fresh signals based on fresh input.
 
-The LLM gets a graduated instruction — use agent context proportionally to query complexity. A "hello" doesn't need three pages of search results. A research question does.
+## Decisions go to the LLM, except when they shouldn't
 
-Importantly, agent context is **ephemeral** — it's injected into a temporary message array for the current request only. The enriched message is what the LLM sees, but only the raw user input (without agent context) gets persisted into conversation history. This means agent output enriches a single turn and then vanishes. The next turn gets fresh agent results based on the new input, and conversation history stays clean — no stale search results or outdated extractions accumulating in the context window.
+Each agent's `should_process` gate is the cheapest check that's still correct:
 
-## Installation
+- `URLReader`, `FileReader`, `News` — pure regex / filesystem checks. URL detection is binary; no need for an LLM.
+- `OnlineSearch` — bangs and URLs short-circuit deterministically; only then does the LLM decide whether to search, what depth, and what queries to run.
+- `PersonalInfo`, `LangDetect` — always on. They return whatever they have.
+
+Routing-by-text-interpretation is avoided. The LLM is reserved for actual judgement: *do you need fresh information?*, *is this English?*, *which memories should I update?*.
+
+## Install
 
 ```bash
-git clone https://github.com/yourusername/artemis.git
+git clone https://github.com/nesdeq/artemis.git
 cd artemis
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Set your API keys:
+Set credentials:
 
 ```bash
 export OPENAI_API_KEY="..."        # or any provider litellm supports
 export SERP_API_KEY="..."          # for web search (serper.dev)
-export ENCKEY="..."                # encryption key for personal data
+export ENCKEY="..."                # encryption key for personal memory
 ```
 
 Run:
@@ -85,136 +96,119 @@ Run:
 python cli.py
 ```
 
-## Model Support
+## Models
 
-Artemis uses [litellm](https://github.com/BerriAI/litellm) under the hood, so it works with essentially any LLM provider — or your local models.
-
-Configure in `_config.py`:
+Two tiers. Configure in `_config.py`:
 
 ```python
-# Main conversation model
-llm = "openai/gpt-5.2"
-# llm = "anthropic/claude-sonnet-4-5-20250929"
-# llm = "ollama/llama3.1"
-# llm = "ollama/gemma2:9b"
+llm = "openai/gpt-5.1"        # main conversation model
+agent_llm = "openai/gpt-5-mini"  # cheaper, faster — used by agents
 
-# Agent model (fast/cheap — used for classification and extraction)
-agent_llm = "openai/gpt-5-mini"
-# agent_llm = "ollama/phi4"
+ro = "medium"                  # main reasoning effort
+agent_ro = "medium"            # agent reasoning effort
 ```
 
-The two-tier model setup is intentional. Agents need speed, not depth — they're doing binary decisions ("search or not?"), keyword extraction, and language detection. The main model gets the full context and does the heavy lifting. Run agents on a local model and your main conversation on a cloud provider, or run everything local. Your call.
+Anything [litellm](https://github.com/BerriAI/litellm) supports works — OpenAI, Anthropic, Gemini, Ollama, local models. Run agents on a small local model and the main loop on a frontier model, or all-local, or all-cloud.
 
-Reasoning effort is configurable per tier:
+## Built-in agents
 
-```python
-ro = "medium"        # main model reasoning
-agent_ro = "minimal" # agents: fast and cheap
-```
-
-## Agents
-
-### Built-in
-
-| Agent | Trigger | What it does |
+| Agent | Trigger | Output |
 |---|---|---|
-| **PersonalInfo** | Always | Extracts personal info, encrypts and persists it locally. Builds a structured user profile with persistence levels (core/stable/situational/ephemeral) and automatic retention policies. |
-| **LangDetect** | Always | Detects input language, instructs the main LLM to respond in kind. |
-| **OnlineSearch** | LLM-decided | Generates search queries, fetches results via SERP API, extracts full page content with trafilatura. Smart depth: quick for simple lookups, thorough for research. |
-| **URLReader** | URL in input | Fetches and extracts content from any URL you paste. |
-| **FileReader** | File path in input | Reads files — text, PDF, DOCX, XLSX, and more via MarkItDown. Path traversal protection included. |
-| **DailyNews** | `!news` `!games` `!finance` | Fetches from 50+ RSS feeds concurrently. |
-| **HueLights** | LLM-decided | Controls Philips Hue lights via natural language. |
+| `PersonalInfo` | always | Encrypted user profile (Fernet/AES). Extracts memories, classifies persistence (core/stable/situational/ephemeral), retains accordingly. |
+| `LangDetect` | always | ISO 639-1 directive — main LLM responds in the user's language. |
+| `OnlineSearch` | LLM-decided | SERP-API web search with smart depth (quick = past day; thorough = all-time + past day + news). Pages fetched and extracted via trafilatura, with Jina Reader fallback for JS pages. |
+| `URLReader` | URL in input | Fetches and extracts main content from any URL. |
+| `FileReader` | absolute path in input | Reads text, PDF, DOCX, XLSX, CSV, and more (MarkItDown). Path-traversal protected. |
+| `DailyNews` | `!news` `!games` `!finance` | RSS aggregation across 50+ feeds, fetched concurrently. |
+| `HueLights` | LLM-decided (latent — not registered by default) | Controls Philips Hue via natural language. |
 
-### Writing Your Own
+## Writing your own agent
 
-Agents are simple. Inherit from `Agent`, implement two methods:
+Inherit, implement two methods, register. That's it.
 
 ```python
-from agents.Agent import Agent
+# agents/Weather.py
+from typing import Optional
+from .Agent import Agent
 
 class WeatherAgent(Agent):
-    def should_process(self, user_input, last_response=None):
-        # Return True if this agent should run.
-        # This is called for EVERY message — keep it fast.
+    def should_process(self, user_input: str, last_response: Optional[str] = None) -> bool:
+        # Cheap. Runs for every message. No LLM unless you really need one.
         return "weather" in user_input.lower()
 
-    def process(self, user_input, last_response=None):
-        # Do the actual work. Return a string to inject into context,
-        # or None to contribute nothing.
+    def process(self, user_input: str, last_response: Optional[str] = None) -> Optional[str]:
         self.metadata = {"source": "weather-api"}
-        return f"Current weather: 18°C, partly cloudy"
+        return "Current weather: 18°C, partly cloudy."
 ```
 
-Register it in `core.py`:
+Add it to `core.py`:
 
 ```python
-agent_configs = [
+AGENT_REGISTRY = [
     # ... existing agents ...
     (WeatherAgent, "Weather"),
 ]
 ```
 
-That's it. Your agent will be initialized on startup, called in parallel with every other agent, and its output will be injected into the LLM context if it returns something. No routing config, no tool schemas, no function calling plumbing.
+Done. Your agent's gate is called in parallel with every other agent's, and if it passes, `process` runs in parallel too. The string you return becomes a `### Weather` section in the next turn's context.
 
-Every agent gets:
-- `self.llm` — an `LLMInterface` instance configured with the agent model
-- `self.metadata` — dict that gets surfaced in the CLI sources panel
+Each agent gets:
+- `self.llm` — `LLMInterface` configured for the agent model, with cost tracking under the agent's name
+- `self.metadata` — surfaced in the CLI sources panel
 - `self.user` — current user identifier
-- `Agent.get_executor()` — shared `ThreadPoolExecutor` (10 workers) for parallel I/O
+- `Agent.get_executor()` — shared `ThreadPoolExecutor` for fan-out I/O
+- `tools.utils.parallel_map(items, fn, executor, timeout)` — drop-in helper for concurrent I/O with real timeout enforcement
 
-## CLI Commands
+See `agents/_Agents.md` for the full guide and `agents/OnlineSearch.py` for a non-trivial reference.
+
+## CLI commands
 
 | Command | Action |
 |---|---|
 | `/exit` | Quit |
-| `/save [name]` | Save last exchange to markdown file |
-| `/cost` | Show session cost breakdown per context (main + each agent) |
+| `/save [name]` | Save the last exchange as markdown |
+| `/cost` | Per-context token + cost breakdown (main + each agent) |
 
-## Project Structure
+## Project layout
 
 ```
 artemis/
-├── cli.py                  # terminal interface
-├── core.py                 # orchestrator — agent lifecycle, context assembly, streaming
+├── cli.py                  # terminal UI (rich + prompt_toolkit)
+├── core.py                 # orchestrator: agent lifecycle, context assembly, streaming
 ├── _config.py              # all configuration in one place
 ├── llms/
-│   └── LLMInterface.py     # litellm wrapper, cost tracking, reasoning model support
+│   └── LLMInterface.py     # litellm wrapper, exact usage tracking via stream_options
 ├── agents/
-│   ├── Agent.py            # base class
-│   ├── OnlineSearch.py     # web search + content extraction
+│   ├── Agent.py            # base class + shared executor
 │   ├── PersonalInfo.py     # encrypted user memory
+│   ├── LangDetect.py       # language detection
+│   ├── OnlineSearch.py     # web search + content extraction
 │   ├── ReadURLs.py         # URL content fetcher
-│   ├── FileReader.py       # file reader (text, pdf, docx, ...)
+│   ├── FileReader.py       # multi-format file reader
 │   ├── News.py             # RSS aggregator
-│   ├── HueLights.py        # smart home control
-│   └── LangDetect.py       # language detection
+│   └── HueLights.py        # smart-home control (latent)
 ├── tools/
-│   ├── utils.py            # shared utilities, encryption, web extraction
-│   └── readpinf.py         # memory viewer/debugger
+│   ├── utils.py            # shared utilities, encryption, web extraction, parallel_map
+│   └── readpinf.py         # personal-memory inspector / debugger
 └── requirements.txt
 ```
 
-## Data Storage
+## Data and privacy
 
-All persistent data lives in `~/.artemis/`:
+Everything persistent lives in `~/.artemis/` (or `./data/` if it exists in the project root):
 
 | File | Contents |
 |---|---|
-| `.pinf` | Encrypted personal memory store (Fernet/AES-128-CBC) |
+| `.pinf` / `.pinf_<hash>` | Encrypted personal memory store (Fernet) |
 | `.artemis_history` | CLI command history |
-| `artemis_*.md` | Saved chat exports (`/save` command) |
+| `artemis_*.md` | Saved chat exports |
 
-If a `data/` directory exists in the project root, that takes priority — useful for development or keeping data local to the repo.
-
-## Privacy
-
-Personal information is encrypted at rest using Fernet with a key derived from your `ENCKEY` environment variable via PBKDF2. No cloud sync, no telemetry, no third-party access. Inspect your stored memories anytime:
+Personal memory is encrypted at rest with a key derived from `ENCKEY` via PBKDF2-SHA256. No cloud sync, no telemetry. Inspect what's stored:
 
 ```bash
 python tools/readpinf.py --stats
 python tools/readpinf.py --list
-python tools/readpinf.py --search "python"
+python tools/readpinf.py --search python
 ```
 
 ## License

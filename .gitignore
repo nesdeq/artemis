@@ -1,7 +1,38 @@
-**/__pycache__
-**/.DS_STORE
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+*.whl
 
-.venv
+# Virtualenvs
+.venv/
+venv/
+env/
 .python-version
 
-/data
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.tox/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Local data
+/data/
+*.log
+.env
+.env.local
