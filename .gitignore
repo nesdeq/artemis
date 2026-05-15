@@ -36,3 +36,5 @@ env/
 *.log
 .env
 .env.local
+
+data
