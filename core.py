@@ -20,6 +20,11 @@ from agents.ReadURLs import URLReaderAgent
 from llms.LLMInterface import LLMInterface
 
 
+# Sentinel marking the end of the (synchronous) LLM stream when pulled one
+# item at a time off a worker thread.
+_STREAM_END = object()
+
+
 class ArtemisCore:
     """
     Engine for Artemis: agent lifecycle, context assembly, response streaming.
@@ -50,13 +55,13 @@ class ArtemisCore:
         self.user = user
         self.llm = LLMInterface(context="main")
         self.messages: List[Dict[str, str]] = []
+        # system_prompt is populated by update_system_prompt() at the top of
+        # every get_ai_response() call — no need to prime it in __init__.
         self.system_prompt = ""
         self.use_summarization = use_summarization
         self.agents: List[Agent] = []
         self._agents_initialized = False
         self._init_lock = asyncio.Lock()
-
-        self.update_system_prompt()
 
     # ------------------------------------------------------------------
     # Agent lifecycle
@@ -164,28 +169,36 @@ class ArtemisCore:
         if _config.debug:
             print(f"Active agents: {[a.name for a in active]}")
 
+        if not active:
+            return {}, {}
+
         timeout = _config.agent_process_timeout
-        tasks = [
+        named_tasks = [
             (agent.name, asyncio.create_task(self._process_agent(agent, user_input, last_response)))
             for agent in active
         ]
 
+        # One wall-clock deadline for the whole batch. The old per-agent
+        # wait_for restarted the clock for each agent in series, so worst-case
+        # latency was n × timeout instead of a single timeout window.
+        done, pending = await asyncio.wait([t for _, t in named_tasks], timeout=timeout)
+        for task in pending:
+            task.cancel()
+
         outputs: Dict[str, str] = {}
         metadata: Dict[str, Dict[str, Any]] = {}
 
-        for name, task in tasks:
-            try:
-                enrichment, meta = await asyncio.wait_for(task, timeout=timeout)
-            except asyncio.TimeoutError:
+        for name, task in named_tasks:
+            if task not in done:
                 if _config.debug:
                     print(f"Agent {name} timed out after {timeout}s")
-                task.cancel()
                 continue
+            try:
+                enrichment, meta = task.result()
             except Exception as e:
                 if _config.debug:
                     print(f"Error awaiting agent {name}: {e}")
                 continue
-
             if enrichment is not None:
                 outputs[name] = enrichment
                 metadata[name] = meta or {}
@@ -254,11 +267,20 @@ class ArtemisCore:
         full_response = ""
 
         try:
-            for chunk_data in self.llm.stream_content(
+            # stream_content is a *synchronous* generator that performs blocking
+            # HTTP I/O (the initial connect and every chunk read). Pull each item
+            # on a worker thread via to_thread so the event loop stays free —
+            # otherwise the TUI render loop, timers and background work all freeze
+            # for the whole response.
+            stream = self.llm.stream_content(
                 messages=temp_messages,
                 system_prompt=self.system_prompt,
                 max_tokens=_config.max_tokens,
-            ):
+            )
+            while True:
+                chunk_data = await asyncio.to_thread(next, stream, _STREAM_END)
+                if chunk_data is _STREAM_END:
+                    break
                 content = chunk_data.get('content')
                 if content:
                     full_response += content
@@ -285,9 +307,13 @@ class ArtemisCore:
 
         max_messages = _config.max_conversation_history
         if len(self.messages) > max_messages:
-            excess = len(self.messages) - max_messages
-            excess += excess % 2  # round up to even — keep user/assistant pairs aligned
-            self.messages = self.messages[excess:]
+            self.messages = self.messages[len(self.messages) - max_messages:]
+            # The conversation opens with an assistant welcome, so a raw tail can
+            # begin on an orphaned assistant turn — which breaks user/assistant
+            # pairing and is rejected by some providers. Drop a leading assistant
+            # so trimmed history always starts on a user turn.
+            if self.messages and self.messages[0]["role"] == "assistant":
+                self.messages = self.messages[1:]
 
         if _config.streaming:
             yield None, agent_metadata, input_tokens, output_tokens

@@ -5,8 +5,9 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import _config
 from .Agent import Agent
-from tools.utils import shared_markitdown
+from tools.utils import format_blocks, shared_markitdown
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +17,14 @@ class FileReaderAgent(Agent):
 
     TEXT_EXTENSIONS = {
         '.txt', '.py', '.js', '.json', '.yml', '.yaml', '.conf',
-        '.ini', '.log', '.md', '.rst', '.csv', '.env', '.sh',
+        '.ini', '.log', '.md', '.rst', '.csv', '.sh',
         '.bash', '.zsh', '.fish', '.sql', '.xml', '.html', '.css',
     }
+
+    # Never read these — they routinely hold credentials and must not be fed to
+    # the LLM. Checked by extension AND exact name (a bare ".env" has no suffix).
+    _SENSITIVE_EXTENSIONS = {'.env', '.pem', '.key', '.p12', '.pfx', '.crt', '.keystore'}
+    _SENSITIVE_NAMES = {'.env', '.netrc', '.htpasswd', '.pgpass'}
 
     # Quoted or bare absolute / home-relative path. Stops at whitespace, ', ", :.
     _PATH_RE = re.compile(r'(?<![:/])(?:\'|")?((?:/|~/)(?:[^\'"\s/:]+/?)+)(?:\'|")?')
@@ -77,21 +83,36 @@ class FileReaderAgent(Agent):
         out: List[Dict[str, Any]] = []
         for filename in filenames:
             expanded = os.path.expanduser(filename)
+            # Re-validate at read time — the check in _extract_filenames is
+            # subject to TOCTOU — and bound the read size before touching it.
+            if not self._is_safe_path(expanded):
+                continue
             try:
+                size = os.path.getsize(expanded)
+                if size > _config.file_reader_max_bytes:
+                    logger.warning(
+                        f"Skipping {expanded}: {size} bytes exceeds "
+                        f"{_config.file_reader_max_bytes} byte limit"
+                    )
+                    continue
                 content = self._read_file_content(expanded)
                 if content is None:
                     continue
                 out.append({
                     "filename": expanded,
                     "content": content,
-                    "size": os.path.getsize(expanded),
+                    "size": size,
                 })
             except Exception as e:
                 logger.error(f"Error reading file {expanded}: {e}")
         return out
 
     def _read_file_content(self, filename: str) -> Optional[str]:
-        suffix = Path(filename).suffix.lower()
+        p = Path(filename)
+        suffix = p.suffix.lower()
+        if suffix in self._SENSITIVE_EXTENSIONS or p.name.lower() in self._SENSITIVE_NAMES:
+            logger.warning(f"Refusing to read sensitive file: {filename}")
+            return None
         if suffix in self.TEXT_EXTENSIONS:
             return self._read_text_file(filename)
         return self._read_with_markitdown(filename)
@@ -113,15 +134,14 @@ class FileReaderAgent(Agent):
             return self.markitdown.convert(filename).text_content
         except Exception as e:
             logger.error(f"Error extracting text from {filename}: {e}")
-            return f"Error: Unable to extract text from {filename}"
+            return None
+
+    _CONTEXT_FIELDS = [
+        ("Filename", "filename"),
+        ("Size", "size_display"),
+        ("Content", "content", "block"),
+    ]
 
     def _create_context(self, files: List[Dict[str, Any]]) -> str:
-        parts: List[str] = []
-        for f in files:
-            parts.extend([
-                f"Filename: {f['filename']}",
-                f"Size: {f['size']} bytes",
-                f"Content:\n{f['content']}",
-                "",
-            ])
-        return "\n".join(parts).strip()
+        records = [{**f, "size_display": f"{f['size']} bytes"} for f in files]
+        return format_blocks(records, self._CONTEXT_FIELDS)

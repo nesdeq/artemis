@@ -10,7 +10,7 @@ import io
 import os
 import logging
 from concurrent.futures import as_completed, TimeoutError as FuturesTimeoutError
-from typing import Optional, Any, List, Callable, TypeVar
+from typing import Optional, Any, Dict, List, Callable, Sequence, Tuple, TypeVar, Union
 from urllib.parse import urlparse
 
 
@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.fernet import Fernet
 from markitdown import MarkItDown
+
+import _config
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +72,9 @@ def _build_trafilatura_config():
     from trafilatura.settings import DEFAULT_CONFIG
     cfg = deepcopy(DEFAULT_CONFIG)
     cfg.set("DEFAULT", "USER_AGENTS", DEFAULT_USER_AGENT)
-    cfg.set("DEFAULT", "DOWNLOAD_TIMEOUT", "10")
-    cfg.set("DEFAULT", "MIN_EXTRACTED_SIZE", "100")
-    cfg.set("DEFAULT", "MIN_OUTPUT_SIZE", "50")
+    cfg.set("DEFAULT", "DOWNLOAD_TIMEOUT", str(_config.trafilatura_download_timeout))
+    cfg.set("DEFAULT", "MIN_EXTRACTED_SIZE", str(_config.trafilatura_min_extracted_size))
+    cfg.set("DEFAULT", "MIN_OUTPUT_SIZE", str(_config.trafilatura_min_output_size))
     return cfg
 
 _trafilatura_config = None
@@ -140,12 +142,13 @@ def _fetch_with_trafilatura(url: str, favor_precision: bool = False,
 def _fetch_with_jina(url: str) -> Optional[dict]:
     """Fallback: extract content via Jina Reader API (handles JS-rendered pages)."""
     import requests
+    import _config
 
     try:
         resp = requests.get(
             f"https://r.jina.ai/{url}",
             headers={"Accept": "application/json", "User-Agent": DEFAULT_USER_AGENT},
-            timeout=15,
+            timeout=_config.url_fetch_timeout,
         )
         if resp.status_code != 200:
             return None
@@ -163,7 +166,8 @@ def _fetch_with_jina(url: str) -> Optional[dict]:
             "description": data.get("description", ""),
             "hostname": urlparse(url).hostname or "",
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Jina fetch failed for {url}: {e}")
         return None
 
 
@@ -256,6 +260,67 @@ def parallel_map(items: List[T], fn: Callable[[T], Optional[R]], executor,
             if not f.done():
                 f.cancel()
     return results
+
+
+# A field spec is (label, key) → "Label: value", or (label, key, mode) where
+# mode ∈ {"block" (value on its own line), "optional" (skip if falsy),
+# "optional_block" (both)}.
+FieldSpec = Union[Tuple[str, str], Tuple[str, str, str]]
+
+
+def format_record(record: Dict[str, Any], fields: Sequence[FieldSpec]) -> str:
+    """Render one record as labelled lines. See FieldSpec for field modes."""
+    lines: List[str] = []
+    for spec in fields:
+        label, key = spec[0], spec[1]
+        mode = spec[2] if len(spec) > 2 else ""
+        value = record.get(key, "")
+        if mode in ("optional", "optional_block") and not value:
+            continue
+        block = mode in ("block", "optional_block")
+        lines.append(f"{label}:\n{value}" if block else f"{label}: {value}")
+    return "\n".join(lines)
+
+
+def format_blocks(records: Sequence[Dict[str, Any]], fields: Sequence[FieldSpec],
+                  header: Optional[str] = None) -> str:
+    """Render records as blank-line-separated labelled blocks, with optional header."""
+    blocks = [b for b in (format_record(r, fields) for r in records) if b]
+    body = "\n\n".join(blocks)
+    if header:
+        body = f"{header}\n\n{body}" if body else header
+    return body.strip()
+
+
+_token_encoder = None
+
+
+def _cl100k_encoder():
+    """Lazily build and cache the shared cl100k tokenizer."""
+    global _token_encoder
+    if _token_encoder is None:
+        import tiktoken
+        _token_encoder = tiktoken.get_encoding("cl100k_base")
+    return _token_encoder
+
+
+def take_within_token_budget(items: Sequence[T], render: Callable[[T], str],
+                             max_tokens: int) -> Tuple[List[T], int]:
+    """Return (prefix_of_items_that_fit, total_tokens) under max_tokens.
+
+    Stops at the first item that would overflow the budget — shared by the
+    web-search and URL-reader context builders.
+    """
+    enc = _cl100k_encoder()
+    kept: List[T] = []
+    total = 0
+    for item in items:
+        n = len(enc.encode(render(item)))
+        if total + n > max_tokens:
+            break
+        kept.append(item)
+        total += n
+    return kept, total
 
 
 def extract_json(text: str) -> Optional[Any]:

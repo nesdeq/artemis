@@ -41,20 +41,26 @@ class C:
         cls.YELLOW = cls.RED = cls.BOLD = cls.DIM = cls.END = ''
 
 
-# Persistence level styling
-PERSISTENCE_COLORS = {
+# Retention bucket styling (v3). 'stable' kept as alias to 'core' for any
+# pre-migration v2 file the user inspects before running the agent.
+RETENTION_COLORS = {
     'core': C.RED,
-    'stable': C.YELLOW,
+    'stable': C.RED,
     'situational': C.CYAN,
     'ephemeral': C.DIM,
 }
 
-PERSISTENCE_SYMBOLS = {
+RETENTION_SYMBOLS = {
     'core': '●',
-    'stable': '◆',
+    'stable': '●',
     'situational': '○',
     'ephemeral': '·',
 }
+
+
+def get_retention(mem: dict) -> str:
+    """Read the bucket field, tolerating v2's 'persistence' name."""
+    return mem.get('retention') or mem.get('persistence', 'situational')
 
 
 def get_secret_key(username: str) -> bytes:
@@ -143,31 +149,23 @@ def format_age(timestamp_str: str) -> str:
 def print_memory(mem: dict, show_id: bool = False, old_format: bool = False):
     """Print a single memory entry with formatting."""
     if old_format:
-        # Old format: timestamp, category, data, relevance
+        # v1: timestamp, category, data, relevance
         print(f"  {C.DIM}{mem.get('timestamp', '?')}{C.END}")
         print(f"  {C.BOLD}{mem.get('data', '?')}{C.END}")
         print(f"  Category: {mem.get('category', '?')} | Relevance: {mem.get('relevance', '?')}")
         return
 
-    persistence = mem.get('persistence', 'situational')
-    color = PERSISTENCE_COLORS.get(persistence, '')
-    symbol = PERSISTENCE_SYMBOLS.get(persistence, '?')
+    retention = get_retention(mem)
+    color = RETENTION_COLORS.get(retention, '')
+    symbol = RETENTION_SYMBOLS.get(retention, '?')
 
-    # Header line: symbol, content
     print(f"  {color}{symbol}{C.END} {C.BOLD}{mem.get('content', '?')}{C.END}")
 
-    # Details line
-    details = []
-    details.append(f"{color}{persistence}{C.END}")
-    details.append(mem.get('category', '?'))
-    details.append(mem.get('memory_type', 'fact'))
-
-    if mem.get('reinforced', 0) > 0:
-        details.append(f"{C.GREEN}+{mem['reinforced']} reinforced{C.END}")
-
-    age = format_age(mem.get('created', ''))
-    details.append(f"{C.DIM}{age}{C.END}")
-
+    details = [
+        f"{color}{retention}{C.END}",
+        mem.get('category', '?'),
+        f"{C.DIM}{format_age(mem.get('created', ''))}{C.END}",
+    ]
     if show_id:
         details.append(f"{C.DIM}id:{mem.get('id', '?')[:8]}{C.END}")
 
@@ -191,20 +189,19 @@ def print_stats(store: dict):
         print(f"\n  {C.YELLOW}⚠ Old format - run the agent to migrate{C.END}")
         return
 
-    # Group by persistence
-    by_persistence = defaultdict(list)
+    # Group by retention
+    by_retention = defaultdict(list)
     for mem in memories:
-        by_persistence[mem.get('persistence', 'unknown')].append(mem)
+        by_retention[get_retention(mem)].append(mem)
 
-    print(f"\n  {C.BOLD}By Persistence:{C.END}")
-    for level in ['core', 'stable', 'situational', 'ephemeral']:
-        count = len(by_persistence.get(level, []))
-        color = PERSISTENCE_COLORS.get(level, '')
-        symbol = PERSISTENCE_SYMBOLS.get(level, '?')
+    print(f"\n  {C.BOLD}By Retention:{C.END}")
+    for level in ['core', 'situational', 'ephemeral']:
+        count = len(by_retention.get(level, []))
+        color = RETENTION_COLORS.get(level, '')
+        symbol = RETENTION_SYMBOLS.get(level, '?')
         bar = '█' * min(count, 30)
         print(f"    {color}{symbol} {level:12}{C.END} {count:3}  {C.DIM}{bar}{C.END}")
 
-    # Group by category
     by_category = defaultdict(list)
     for mem in memories:
         by_category[mem.get('category', 'unknown')].append(mem)
@@ -212,27 +209,6 @@ def print_stats(store: dict):
     print(f"\n  {C.BOLD}By Category:{C.END}")
     for cat, mems in sorted(by_category.items(), key=lambda x: -len(x[1])):
         print(f"    {cat:15} {len(mems):3}")
-
-    # Group by type
-    by_type = defaultdict(list)
-    for mem in memories:
-        by_type[mem.get('memory_type', 'unknown')].append(mem)
-
-    print(f"\n  {C.BOLD}By Type:{C.END}")
-    for mtype, mems in sorted(by_type.items(), key=lambda x: -len(x[1])):
-        print(f"    {mtype:15} {len(mems):3}")
-
-    # Reinforcement stats
-    reinforced = [m for m in memories if m.get('reinforced', 0) > 0]
-    if reinforced:
-        total_reinforcements = sum(m.get('reinforced', 0) for m in reinforced)
-        print(f"\n  {C.BOLD}Reinforcement:{C.END}")
-        print(f"    Memories reinforced: {len(reinforced)}")
-        print(f"    Total reinforcements: {total_reinforcements}")
-        top = sorted(reinforced, key=lambda x: -x.get('reinforced', 0))[:3]
-        print(f"    Top reinforced:")
-        for m in top:
-            print(f"      +{m['reinforced']}: {m.get('content', '?')[:50]}")
 
 
 def list_memories(store: dict, filters: dict = None):
@@ -243,26 +219,24 @@ def list_memories(store: dict, filters: dict = None):
     if filters:
         if filters.get('category'):
             memories = [m for m in memories if m.get('category') == filters['category']]
-        if filters.get('persistence'):
-            memories = [m for m in memories if m.get('persistence') == filters['persistence']]
-        if filters.get('type'):
-            memories = [m for m in memories if m.get('memory_type') == filters['type']]
+        if filters.get('retention'):
+            memories = [m for m in memories if get_retention(m) == filters['retention']]
         if filters.get('search'):
             term = filters['search'].lower()
-            memories = [m for m in memories if term in m.get('content', '').lower() or term in m.get('data', '').lower()]
+            memories = [m for m in memories
+                        if term in m.get('content', '').lower()
+                        or term in m.get('data', '').lower()]
 
     if not memories:
         print(f"{C.YELLOW}No memories match the filters{C.END}")
         return
 
-    # Sort by persistence priority, then by reinforced, then by date
     if not is_old:
-        persistence_order = {'core': 0, 'stable': 1, 'situational': 2, 'ephemeral': 3}
+        retention_order = {'core': 0, 'situational': 1, 'ephemeral': 2}
         memories = sorted(memories, key=lambda m: (
-            persistence_order.get(m.get('persistence', 'situational'), 9),
-            -m.get('reinforced', 0),
+            retention_order.get(get_retention(m), 9),
             m.get('created', '')
-        ), reverse=False)
+        ))
 
     print(f"\n{C.HEADER}{'=' * 60}{C.END}")
     print(f"{C.BOLD}MEMORIES ({len(memories)}){C.END}")
@@ -288,7 +262,7 @@ def list_superseded(store: dict):
     for mem in superseded:
         status = mem.get('status', 'superseded')
         print(f"  {C.DIM}[{status}]{C.END} {mem.get('content', mem.get('data', '?'))}")
-        print(f"    {C.DIM}{mem.get('category', '?')} | {mem.get('persistence', '?')}{C.END}")
+        print(f"    {C.DIM}{mem.get('category', '?')} | {get_retention(mem)}{C.END}")
         print()
 
 
@@ -326,13 +300,9 @@ def interactive_mode(store: dict):
             if cat:
                 filters['category'] = cat
 
-            pers = input("  Persistence (core/stable/situational/ephemeral): ").strip().lower()
-            if pers:
-                filters['persistence'] = pers
-
-            mtype = input("  Type (fact/preference/event/goal/relationship): ").strip().lower()
-            if mtype:
-                filters['type'] = mtype
+            ret = input("  Retention (core/situational/ephemeral): ").strip().lower()
+            if ret:
+                filters['retention'] = ret
 
             search = input("  Search text: ").strip()
             if search:
@@ -365,7 +335,7 @@ Examples:
   python readpinf.py --stats            # Show stats only
   python readpinf.py --list             # List all memories
   python readpinf.py -c work            # Filter by category
-  python readpinf.py -p core            # Filter by persistence
+  python readpinf.py -r core            # Filter by retention
   python readpinf.py --search python    # Search in content
   python readpinf.py --users            # List all user files
   python readpinf.py --no-color         # Disable colors
@@ -378,8 +348,7 @@ Examples:
     parser.add_argument('--list', action='store_true', help='List all memories')
     parser.add_argument('--history', action='store_true', help='Show superseded memories')
     parser.add_argument('-c', '--category', help='Filter by category')
-    parser.add_argument('-p', '--persistence', help='Filter by persistence level')
-    parser.add_argument('-t', '--type', help='Filter by memory type')
+    parser.add_argument('-r', '--retention', help='Filter by retention level (core/situational/ephemeral)')
     parser.add_argument('--search', help='Search in content')
     parser.add_argument('--export', help='Export to JSON file')
     parser.add_argument('--no-color', action='store_true', help='Disable colored output')
@@ -410,10 +379,8 @@ Examples:
     filters = {}
     if args.category:
         filters['category'] = args.category
-    if args.persistence:
-        filters['persistence'] = args.persistence
-    if args.type:
-        filters['type'] = args.type
+    if args.retention:
+        filters['retention'] = args.retention
     if args.search:
         filters['search'] = args.search
 

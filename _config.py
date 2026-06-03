@@ -3,6 +3,8 @@ Artemis AI Configuration
 Centralized configuration for all system components.
 """
 
+import os
+
 # ============================================================================
 # LLM MODELS
 # ============================================================================
@@ -43,11 +45,13 @@ agent_llm = "openai/gpt-5-mini"  # $0.25/$2.00 per MTok - more capable
 #   GPT-5.1 series: minimal, low, medium, high, xhigh
 ro = "medium"  # Uses model-specific defaults if None (minimal/low depending on model)
 
-# Reasoning effort for agent LLM
-# Agents need fast responses (classification, extraction), so use lowest valid:
+# Reasoning effort for agent LLM.
+# "medium" is a deliberate choice: agent calls (classification, extraction) come
+# out noticeably more reliable than at minimal/low, and the latency is acceptable.
+# Lower it if you want faster/cheaper agents — valid floors per family:
 #   O-series: "low" (minimal not supported)
 #   GPT-5/5.1: "minimal"
-# LLMInterface auto-validates and falls back to lowest valid if misconfigured
+# LLMInterface auto-validates and falls back to lowest valid if misconfigured.
 agent_ro = "medium"
 
 
@@ -61,8 +65,10 @@ llm_timeout = 30
 # Number of retry attempts for failed API calls
 llm_retry_attempts = 3
 
-# Maximum tokens for responses
-max_tokens = 4096
+# Maximum tokens for responses. On reasoning models (gpt-5.x), invisible
+# reasoning tokens count against this budget, so keep it generous or complex
+# answers get truncated. _adjust_tokens_for_reasoning only raises sub-floor values.
+max_tokens = 8192
 
 
 # ============================================================================
@@ -94,8 +100,10 @@ shallowSummarize = False
 # Reduces tokens but may lose detail from web pages
 summarize_fetched_content = False
 
-# Philips Hue Bridge IP address (for HueLights agent)
-hueip = "192.168.0.23"
+# Philips Hue Bridge IP address (for HueLights agent). Set via the
+# HUE_BRIDGE_IP env var so a personal LAN address isn't committed; empty leaves
+# the agent disabled (the bridge connection fails and is caught at startup).
+hueip = os.getenv("HUE_BRIDGE_IP", "")
 
 # Max search results per query (OnlineSearchAgent)
 max_search_results = 3
@@ -150,6 +158,24 @@ reasoning_model_min_tokens = 2048
 # Personal memory
 superseded_history_size = 50           # Keep last N superseded memories
 reinforcement_retention_bonus_days = 7 # Per-reinforcement retention extension
+memory_min_content_chars = 5           # Drop extracted entries shorter than this
+memory_max_extractions_per_turn = 3    # Cap memories extracted per message
+memory_relatedness_overlap = 2         # Word overlap to nominate a classifier candidate
+memory_promotion_reinforcement_threshold = 2  # ephemeral → situational after N reinforcements
+
+# File reading (FileReaderAgent)
+file_reader_max_bytes = 10 * 1024 * 1024   # Skip files larger than this (10 MiB) — PROPOSED, tune freely
+
+# Web content extraction (trafilatura, tools/utils.py)
+trafilatura_download_timeout = 10      # Per-URL HTTP download budget (seconds)
+trafilatura_min_extracted_size = 100   # Discard extractions smaller than this (chars)
+trafilatura_min_output_size = 50       # Discard final output smaller than this (chars)
+
+# Summarization token budget = words * this (rough tokens-per-word ceiling)
+summary_tokens_per_word = 2
+
+# HueLights action-planning JSON budget
+hue_action_max_tokens = 256
 
 # UI
 cli_panel_max_width = 100
@@ -164,8 +190,10 @@ cli_panel_padding = 4                  # Subtracted from term_width when sizing 
 from pathlib import Path as _Path
 
 def _resolve_data_dir() -> _Path:
-    """Resolve data directory: use local ./data if it exists, otherwise ~/.artemis."""
-    local = _Path.cwd() / "data"
+    """Resolve data directory: prefer a ./data dir next to this config file,
+    otherwise ~/.artemis. Anchored to __file__ (not cwd) so the same store is
+    used regardless of which directory Artemis is launched from."""
+    local = _Path(__file__).parent / "data"
     if local.is_dir():
         return local
     return _Path.home() / ".artemis"
@@ -289,6 +317,8 @@ You are Artemis, an insightful and occasionally cynical AI chat partner with dee
 - **Personality**: Friendly, helpful, and forthcoming, with a touch of cynicism when appropriate
 
 ## Response Formatting
+- **Register first — prose is the default**: In casual or social exchanges, write in flowing prose. Reach for markdown structure (headings, bullets, tables) only when the topic is genuinely research-y, technical, comparative, or data-bearing. Lists and headings flatten a chat that should breathe. If you're shooting the shit, just talk.
+- **No unsolicited action items**: Do not end casual replies with "next steps", "things to consider", "options you might want to explore", or "let me know if you'd like me to…". If the user wants a structured breakdown, they will ask.
 - **Structure**: Use markdown purposefully for headings, **bold**, and *italics* to enhance readability
 - **Lists**: Employ bulleted or numbered lists when presenting multiple items or steps
 - **Data Presentation**: Present structured data in markdown tables that are both visually clear and programmatically parsable
@@ -298,6 +328,7 @@ You are Artemis, an insightful and occasionally cynical AI chat partner with dee
 - **Visual Elements**: Use emojis sparingly (1-2 max) only when they add genuine emotional context
 
 ## Interaction Approach
+- **Meet the register, not a service desk**: When the user is being casual — banter, opinions, observations, venting, jokes — meet them in that register. Have a take. Push back. Be dry. Don't summarize their message back to them; don't open with "great point" or close with "happy to dig further". For research and technical work, the structured analytical mode is appropriate — for everyday talk, it is not.
 - **Conversational Flow**: Maintain a natural dialogue rhythm appropriate for a chat interface
 - **Context Awareness**: Reference our previous exchanges when relevant to the current message
 - **Response Length**: Keep answers tight and to the point; elaborate only when explicitly requested

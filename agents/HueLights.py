@@ -1,8 +1,20 @@
-# HueLights.py
+"""
+HueLights agent: control Philips Hue lights via natural language.
+
+Architecture (see agents/Agent.py and agents/_Agents.md for the LAWS):
+- should_process: cheap pre-filter (bridge connected + keyword regex; both
+  binary, allowed under rule 5), THEN the DECISION LLM call
+  ("is this a light-control command?").
+- process: the EXECUTION LLM call returns a structured action JSON;
+  code then applies the action via the Hue Bridge.
+
+Decision and execution are SEPARATE LLM calls. NEVER merged.
+"""
+
 import re
 import logging
 from datetime import datetime
-from typing import Dict, Optional, Any
+from typing import Any, Dict, List, Optional
 
 from phue import Bridge
 
@@ -12,180 +24,190 @@ import _config
 
 logger = logging.getLogger(__name__)
 
-# Fast keyword check for should_process (avoids LLM call for irrelevant input)
+# Cheap pre-filter — narrows the input space before the decision LLM call.
 _LIGHT_KEYWORDS = re.compile(
-    r'\b(lights?|lamps?|bright|dim|dark|hue|bulbs?|turn\s+on|turn\s+off|switch\s+on|switch\s+off)\b',
-    re.IGNORECASE
+    r'\b(lights?|lamps?|bright|dim|dark|hue|bulbs?|(?:turn|switch)\s+(?:on|off))\b',
+    re.IGNORECASE,
 )
+
+_VALID_ACTIONS = {"on", "off", "adjust"}
 
 
 class HueLightsAgent(Agent):
-    """Agent for controlling Philips Hue lights.
-    
-    This agent interprets user commands to control Philips Hue lights and groups,
-    handling actions like turning lights on/off and adjusting brightness/color.
-    """
-    
+    """Controls Philips Hue lights via natural language. Decision + execution as separate LLM calls."""
+
     def __init__(self, name: str, user: Optional[str] = None) -> None:
-        """Initialize the HueLightsAgent.
-        
-        Args:
-            name: The name of the agent
-            user: Optional user identifier
-        """
         super().__init__(name, user)
-        self.lights = None
-        self.groups = None
-        
+        self.bridge: Optional[Bridge] = None
+        self.lights: Dict[str, Any] = {}
+        self.groups: Dict[Any, Any] = {}
+        self._id_to_name: Dict[Any, str] = {}
         try:
             self._connect_to_bridge()
         except Exception as e:
-            logger.error(f"Error connecting to Hue Bridge: {str(e)}")
+            logger.error(f"Error connecting to Hue Bridge: {e}")
 
     def _connect_to_bridge(self) -> None:
-        """Connect to the Philips Hue Bridge and get lights and groups."""
         self.bridge = Bridge(_config.hueip)
-        # self.bridge.connect()  # Uncomment if you need interactive connection
-        
         self.lights = self.bridge.get_light_objects('name')
+        # id → name map, so group members resolve from cache instead of a
+        # per-light HTTP round-trip at action time.
+        self._id_to_name = {light.light_id: name for name, light in self.lights.items()}
         self.groups = self.bridge.get_group()
-        
         if not self.lights and not self.groups:
-            logger.warning("No lights or groups found. Check if the lights are connected and configured properly.")
+            logger.warning("No lights or groups found.")
         else:
-            logger.info(f"Found {len(self.lights)} lights and {len(self.groups)} groups:")
-            
-            for light_name, light_object in self.lights.items():
-                logger.info(f"- Light: {light_name} ({light_object.type})")
-                
-            for group_id, group_data in self.groups.items():
-                logger.info(f"- Group: {group_data['name']} (ID: {group_id})")
+            logger.info(f"Found {len(self.lights)} lights, {len(self.groups)} groups")
 
+    # ----------------------------------------------------------------- Decision
     def should_process(self, user_input: str, last_response: Optional[str] = None) -> bool:
-        """Fast keyword check - LLM classification deferred to process()."""
+        """Cheap pre-filter, then DECISION LLM call."""
         if not self.lights and not self.groups:
             return False
-        return bool(_LIGHT_KEYWORDS.search(user_input))
+        if not _LIGHT_KEYWORDS.search(user_input):
+            return False
+        return self._is_light_command(user_input)
 
+    def _is_light_command(self, user_input: str) -> bool:
+        """DECISION LLM call: is this an actual light-control command?"""
+        prompt = f"""Is this a command to control Philips Hue lights (turn on/off, dim, brighten, change color)?
+
+Answer with exactly one word: YES or NO.
+
+Message: "{user_input}"
+
+Answer:"""
+        try:
+            resp = self.llm.generate_single_response(
+                prompt, max_tokens=_config.search_decision_max_tokens
+            ).strip().upper()
+            return resp.startswith("YES")
+        except Exception as e:
+            logger.error(f"Light-command decision error: {e}")
+            return False
+
+    # ----------------------------------------------------------------- Execution
     def process(self, user_input: str, last_response: Optional[str] = None) -> Optional[str]:
-        """Determine and execute light control action."""
-        action = self.determine_action(user_input)
+        self.metadata = {}
+        action = self._plan_action(user_input)
         if not action:
             return None
-
         self.metadata = {
             "action": action["action"],
             "targets": action["targets"],
-            "description": action["description"]
+            "description": action["description"],
         }
-
-        self.execute_action(action)
+        self._apply_action(action)
         return f"Action executed: {action['description']}"
 
-    def determine_action(self, user_input: str) -> Optional[Dict[str, Any]]:
-        """Determine the light control action from user input.
+    def _plan_action(self, user_input: str) -> Optional[Dict[str, Any]]:
+        """EXECUTION LLM call: produce a structured action JSON."""
+        light_names = list(self.lights.keys())
+        group_names = [g['name'] for g in self.groups.values()]
 
-        Args:
-            user_input: The text input from the user
+        prompt = f"""Translate this user request into a JSON action for Philips Hue lights.
 
-        Returns:
-            Optional[Dict[str, Any]]: Dictionary with action details or None if no action
-        """
-        light_names = list(self.lights.keys()) if self.lights else []
-        group_names = [group_data['name'] for group_data in self.groups.values()] if self.groups else []
+Available lights: {', '.join(light_names) or '(none)'}
+Available groups: {', '.join(group_names) or '(none)'}
+Current time: {datetime.now().strftime("%H:%M")}
 
-        prompt = f"""
-Analyze the following user input to determine if it is a command to control Hue lights.
-If it is, return a valid JSON object with this structure:
+Output a JSON object with this schema:
 {{
-    "action": "on" | "off" | "adjust",
-    "targets": ["light_name1", "group_name1"] or "all",
-    "brightness": number,  // 0 for off, or a value between 1 and 254,
-    "color": [x, y] or null,
-    "description": "A brief description of the action"
+  "action": "on" | "off" | "adjust",
+  "targets": ["light_or_group_name", ...] OR "all",
+  "brightness": <number 1-254>,    // optional; required for "adjust" if dimming
+  "color": [x, y] OR null,          // optional CIE xy
+  "description": "short description of the action"
 }}
-If it is not related to lighting control, return null.
 
-User Input: {user_input}
-Available lights: {', '.join(light_names)}
-Available groups: {', '.join(group_names)}
-Current Time: {datetime.now().strftime("%H:%M")}
+User: "{user_input}"
 
-Ensure that the output is valid JSON.
-"""
+Return ONLY the JSON object."""
         try:
-            response = self.llm.generate_single_response(prompt)
+            response = self.llm.generate_single_response(
+                prompt, max_tokens=_config.hue_action_max_tokens
+            )
             action = extract_json(response)
-
-            # Validate the parsed action
-            if action and isinstance(action, dict) and self._validate_action(action):
+            if isinstance(action, dict) and self._validate_action(action):
                 return action
-
         except Exception as e:
-            logger.error(f"Error determining light action: {str(e)}")
-
+            logger.error(f"Action planning error: {e}")
         return None
 
     def _validate_action(self, action: Dict[str, Any]) -> bool:
-        """Validate that an action dictionary has the required fields.
-        
-        Args:
-            action: Dictionary with action details
-            
-        Returns:
-            bool: True if the action is valid, False otherwise
-        """
-        required_fields = ["action", "targets", "description"]
-        return all(field in action for field in required_fields)
+        if action.get("action") not in _VALID_ACTIONS:
+            return False
+        if "description" not in action:
+            return False
+        # targets must be "all" or a non-empty list, else the action silently
+        # resolves to zero lights yet reports success.
+        targets = action.get("targets")
+        if targets != "all" and not (isinstance(targets, list) and targets):
+            return False
+        # brightness/color come from the LLM and are written straight to
+        # hardware — bound them to the Hue API's documented ranges.
+        brightness = action.get("brightness")
+        if brightness is not None and not (
+            isinstance(brightness, int) and 1 <= brightness <= 254  # Hue brightness range
+        ):
+            return False
+        color = action.get("color")
+        if color is not None and not (
+            isinstance(color, (list, tuple)) and len(color) == 2
+            and all(isinstance(c, (int, float)) and 0.0 <= c <= 1.0 for c in color)  # CIE xy
+        ):
+            return False
+        return True
 
-    def execute_action(self, action: Dict[str, Any]) -> None:
-        """Execute a light control action.
-        
-        Args:
-            action: Dictionary with action details
-        """
-        targets = action['targets']
-        
-        # Handle 'all' targets
-        if targets == 'all':
-            targets = list(self.lights.keys()) + [group['name'] for group in self.groups.values()]
-            
-        for target in targets:
+    def _apply_action(self, action: Dict[str, Any]) -> None:
+        for light in self._resolve_targets(action.get("targets", [])):
             try:
-                # Check if target is a light
-                if target in self.lights:
-                    self.execute_light_action(self.lights[target], action)
-                else:
-                    # Check if target is a group
-                    group = next((group for group in self.groups.values() if group['name'] == target), None)
-                    if group:
-                        for light_id in group['lights']:
-                            light = self.bridge.get_light(int(light_id))
-                            if light and light['name'] in self.lights:
-                                self.execute_light_action(self.lights[light['name']], action)
+                self._apply_to_light(light, action)
             except Exception as e:
-                logger.error(f"Error executing action on target {target}: {str(e)}")
+                logger.error(f"Error applying action to light: {e}")
 
-    def execute_light_action(self, light: Any, action: Dict[str, Any]) -> None:
-        """Execute an action on a specific light.
-        
-        Args:
-            light: Light object to control
-            action: Dictionary with action details
-        """
-        try:
-            if action['action'] == 'on':
-                light.on = True
-            elif action['action'] == 'off':
-                light.on = False
-            elif action['action'] == 'adjust':
-                light.on = True
-                
-                if 'brightness' in action:
-                    light.brightness = action['brightness']
-                    
-                if action.get('color'):
-                    light.xy = action['color']
-                    
-        except Exception as e:
-            logger.error(f"Error executing light action: {str(e)}")
+    def _resolve_targets(self, targets) -> List[Any]:
+        """Resolve 'all' / light-names / group-names to a flat unique list of light objects."""
+        if targets == "all":
+            return list(self.lights.values())
+        if not isinstance(targets, list):
+            return []
+
+        seen: set = set()
+        resolved: List[Any] = []
+        for target in targets:
+            for light in self._lights_for_target(target):
+                key = id(light)
+                if key not in seen:
+                    seen.add(key)
+                    resolved.append(light)
+        return resolved
+
+    def _lights_for_target(self, target: str) -> List[Any]:
+        if target in self.lights:
+            return [self.lights[target]]
+        group = next((g for g in self.groups.values() if g.get('name') == target), None)
+        if not group:
+            return []
+        # Resolve member ids via the cached id→name map (built at connect time)
+        # instead of a blocking bridge.get_light() HTTP call per member.
+        out = []
+        for light_id in group.get('lights', []):
+            try:
+                key = int(light_id)
+            except (TypeError, ValueError):
+                continue
+            name = self._id_to_name.get(key)
+            if name and name in self.lights:
+                out.append(self.lights[name])
+        return out
+
+    def _apply_to_light(self, light: Any, action: Dict[str, Any]) -> None:
+        if action["action"] == "off":
+            light.on = False
+            return
+        light.on = True
+        if action.get("brightness") is not None:
+            light.brightness = action["brightness"]
+        if action.get("color"):
+            light.xy = action["color"]

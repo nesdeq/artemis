@@ -1,6 +1,7 @@
 # Core
 rich
 prompt_toolkit
+textual
 litellm
 cryptography
 trafilatura

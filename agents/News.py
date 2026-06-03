@@ -9,7 +9,7 @@ import requests
 
 import _config
 from .Agent import Agent
-from tools.utils import DEFAULT_USER_AGENT, clean_html, parallel_map
+from tools.utils import DEFAULT_USER_AGENT, clean_html, format_blocks, parallel_map
 
 REQUEST_HEADERS = {'User-Agent': DEFAULT_USER_AGENT}
 
@@ -108,19 +108,17 @@ class DailyStoriesAgent(Agent):
             logger.error(f"Error fetching feed {feed_url}: {e}")
             return []
 
+    _CONTEXT_FIELDS = [
+        ("Title", "title"),
+        ("Source", "source_domain"),
+        ("Link", "link"),
+        ("Published", "published"),
+        ("Summary", "summary"),
+    ]
+
     def _create_context(self, stories: List[Dict[str, str]]) -> str:
         if not stories:
             return "No stories available at this time."
-
         domains = sorted({s['source_domain'] for s in stories})
-        parts = ["Sources: " + ", ".join(domains), ""]
-        for s in stories:
-            parts.extend([
-                f"Title: {s['title']}",
-                f"Source: {s['source_domain']}",
-                f"Link: {s['link']}",
-                f"Published: {s['published']}",
-                f"Summary: {s['summary']}",
-                "",
-            ])
-        return "\n".join(parts).strip()
+        return format_blocks(stories, self._CONTEXT_FIELDS,
+                             header="Sources: " + ", ".join(domains))

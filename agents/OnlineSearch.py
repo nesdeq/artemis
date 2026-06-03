@@ -7,16 +7,15 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-import tiktoken
 
 import _config
 from .Agent import Agent
-from tools.utils import contains_urls, extract_json, fetch_and_extract, parallel_map
+from tools.utils import (
+    contains_urls, extract_json, fetch_and_extract, format_record,
+    parallel_map, take_within_token_budget,
+)
 
 logger = logging.getLogger(__name__)
-
-# Tokenizer for context budget enforcement
-TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
 # SERP API
 SERP_API_URL = "https://google.serper.dev/search"
@@ -44,6 +43,12 @@ class OnlineSearchAgent(Agent):
     """
 
     def should_process(self, user_input: str, last_response: Optional[str] = None) -> bool:
+        # Without a SERP key the agent cannot search — disable it up front instead
+        # of failing per-request deep inside requests (and burning an LLM
+        # decision call to decide on a search it can't run).
+        if not SERP_API_KEY:
+            logger.warning("SERP_API_KEY not set — OnlineSearchAgent disabled")
+            return False
         # Cheap, deterministic exits first; only then ask the LLM.
         if _BANG_RE.search(user_input) or contains_urls(user_input):
             return False
@@ -84,11 +89,10 @@ class OnlineSearchAgent(Agent):
         return self._create_context(enriched)
 
     def _needs_search(self, user_input: str, last_response: Optional[str] = None) -> bool:
-        prev = last_response[:300] + '...' if last_response and len(last_response) > 300 else (last_response or 'None')
         prompt = f"""Need internet search? Output JSON only.
 
         User: "{user_input}"
-        Previous: {prev}
+        Previous: {last_response or 'None'}
 
         YES (search=true):
         - facts, current events, people/companies/products
@@ -124,10 +128,9 @@ class OnlineSearchAgent(Agent):
         current_year = datetime.now().strftime("%Y")
         max_q = _config.max_search_queries
 
-        context_section = ""
-        if last_response:
-            truncated = last_response[:500] + "..." if len(last_response) > 500 else last_response
-            context_section = f"\n        Context (previous response): {truncated}"
+        context_section = (
+            f"\n        Context (previous response): {last_response}" if last_response else ""
+        )
 
         prompt = f"""Plan search. Output JSON only.
 
@@ -259,35 +262,23 @@ class OnlineSearchAgent(Agent):
             logger.error(f"Error processing {result['href']}: {e}")
             return None
 
+    # Field order matches the legacy output exactly (trailing newline preserved
+    # so token accounting is unchanged).
+    _CONTEXT_FIELDS = [("Title", "title"), ("URL", "url"),
+                       ("Snippet", "snippet"), ("Content", "content")]
+
+    def _render_entry(self, r: Dict[str, str]) -> str:
+        return format_record(r, self._CONTEXT_FIELDS) + "\n"
+
     def _create_context(self, results: List[Dict[str, str]]) -> str:
         """Format results, stopping when token budget is hit."""
-        parts: List[str] = []
-        total_tokens = 0
-        included = 0
-
-        for r in results:
-            entry = (
-                f"Title: {r['title']}\n"
-                f"URL: {r['url']}\n"
-                f"Snippet: {r['snippet']}\n"
-                f"Content: {r['content']}\n"
-            )
-            entry_tokens = len(TOKENIZER.encode(entry))
-
-            if total_tokens + entry_tokens > _config.max_context_tokens:
-                logger.info(
-                    f"Token limit reached: {total_tokens}/{_config.max_context_tokens}, "
-                    f"stopping at {included} results"
-                )
-                break
-
-            parts.append(entry)
-            total_tokens += entry_tokens
-            included += 1
+        kept, total_tokens = take_within_token_budget(
+            results, self._render_entry, _config.max_context_tokens
+        )
 
         self.metadata["tokens_used"] = total_tokens
-        self.metadata["results_included"] = included
+        self.metadata["results_included"] = len(kept)
         self.metadata["results_total"] = len(results)
 
-        logger.info(f"Context created: {included}/{len(results)} results, {total_tokens} tokens")
-        return "\n".join(parts).strip()
+        logger.info(f"Context created: {len(kept)}/{len(results)} results, {total_tokens} tokens")
+        return "\n".join(self._render_entry(r) for r in kept).strip()

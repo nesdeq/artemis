@@ -57,7 +57,7 @@ class LLMInterface:
         self.timeout = timeout if timeout is not None else _config.llm_timeout
         self.num_retries = retry_attempts if retry_attempts is not None else _config.llm_retry_attempts
         self.streaming = _config.streaming
-        self.reasoning_effort = reasoning_effort or getattr(_config, 'ro', None)
+        self.reasoning_effort = reasoning_effort or _config.ro
         self.context = context or "main"
 
         self._is_reasoning_model = self._check_reasoning_support()
@@ -204,7 +204,8 @@ class LLMInterface:
         content = getattr(response.choices[0].message, 'content', '') or ''
         return content.strip()
 
-    def summarize(self, text: str, max_words: int = None, temperature: float = 0.3) -> str:
+    def summarize(self, text: str, max_words: Optional[int] = None,
+                  temperature: float = 0.3) -> str:
         """Summarize text content."""
         if max_words is None:
             max_words = _config.default_summary_words
@@ -212,10 +213,12 @@ class LLMInterface:
             f"Summarize the following text in under {max_words} words while keeping the most "
             f"important information. Focus on facts and key points.\n\nText to summarize:\n{text}"
         )
+        # Reasoning models (the default) reject temperature; only pass it to
+        # non-reasoning models. drop_params would strip it anyway — be explicit.
         return self.generate_single_response(
             prompt=prompt,
-            max_tokens=max_words * 2,
-            temperature=temperature,
+            max_tokens=max_words * _config.summary_tokens_per_word,
+            temperature=None if self._is_reasoning_model else temperature,
         )
 
     # =========================================================================
@@ -233,7 +236,8 @@ class LLMInterface:
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"cost_per_token unavailable for {self.model}: {e}")
             input_cost = output_cost = 0.0
 
         with self._cost_lock:

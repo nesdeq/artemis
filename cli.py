@@ -11,9 +11,7 @@ logging.disable(logging.CRITICAL)
 
 import asyncio
 import os
-import re
-import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Iterable, List, Optional, Tuple
 from pathlib import Path
 
 from rich.console import Console
@@ -31,6 +29,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.formatted_text import ANSI
 
 import _config
+import frontend_io
 from core import ArtemisCore
 from llms.LLMInterface import LLMInterface
 from tools.utils import UI_THEME, LOGO
@@ -51,6 +50,8 @@ class ArtemisAI:
         self._panel_width = min(_config.cli_panel_max_width, self.term_width - _config.cli_panel_padding)
         self._cost_panel_width = min(_config.cli_cost_panel_max_width, self.term_width - _config.cli_panel_padding)
         self._thinking_spinner = self._build_thinking_spinner()
+        self.session_turns: List[Dict[str, Any]] = []
+        self.welcome_message: Optional[str] = None
 
     def create_sources_table(self, agent_metadata: Dict[str, Any]) -> Optional[Panel]:
         """
@@ -176,12 +177,21 @@ class ArtemisAI:
         sources_panel = self.create_sources_table(agent_metadata)
         if sources_panel:
             self.console.print(sources_panel)
-        
+
         # Display token statistics
         self.print_stats(input_tokens, output_tokens)
-        
+
         # Add an empty line after the entire response
         self.console.print("")
+
+        # Record turn for /export
+        self.session_turns.append({
+            'user': user_input,
+            'assistant': response_text,
+            'metadata': agent_metadata or {},
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+        })
 
     async def _display_welcome(self) -> None:
         """Display stylized welcome screen with snarky message."""
@@ -195,6 +205,7 @@ class ArtemisAI:
 
         # Get welcome message from core (ensures it's the first message)
         welcome_message = await self.core.ensure_opening_message()
+        self.welcome_message = welcome_message
 
         # Welcome message
         welcome_text = Text()
@@ -224,112 +235,65 @@ class ArtemisAI:
         prompt_prefix = f"{prompt_color}{username}\033[0m \033[38;5;240m⟩\033[0m "
         return prompt_prefix
 
+    def _print_result_panel(self, title: str, rows: Iterable[Tuple[str, str]]) -> None:
+        """Print a label/value summary panel (used by /save, /export)."""
+        table = Table(box=None, show_header=False, show_edge=False, padding=(0, 1))
+        table.add_column("Label", style=f"bold {self.THEME['primary']}")
+        table.add_column("Value", style=self.THEME['text'])
+        for label, value in rows:
+            table.add_row(label, value)
+
+        self.console.print("")
+        self.console.print(Panel(
+            table,
+            title=title,
+            title_align="left",
+            border_style=self.THEME["dim"],
+            box=box.ROUNDED,
+            padding=(1, 2),
+            width=self._panel_width,
+        ))
+        self.console.print("")
+
+    def _warn(self, message: str) -> None:
+        self.console.print(f"[{self.THEME['warning']}]{message}[/{self.THEME['warning']}]")
+
+    def _error(self, message: str) -> None:
+        self.console.print(f"[{self.THEME['error']}]{message}[/{self.THEME['error']}]")
+
     def save_last_exchange(self, command: str) -> None:
-        """
-        Save the last user/assistant exchange to a markdown file.
-
-        Args:
-            command: The full /save command, optionally with filename
-        """
-
-        # Check if there's an exchange to save
-        if len(self.core.messages) < 2:
-            self.console.print(
-                f"[{self.THEME['warning']}]Nothing to save yet.[/{self.THEME['warning']}]"
-            )
-            return
-
-        # Find last user and assistant messages
-        last_user = None
-        last_assistant = None
-        for msg in reversed(self.core.messages):
-            if msg['role'] == 'assistant' and last_assistant is None:
-                last_assistant = msg['content']
-            elif msg['role'] == 'user' and last_user is None:
-                last_user = msg['content']
-            if last_user and last_assistant:
-                break
-
-        if not last_user or not last_assistant:
-            self.console.print(
-                f"[{self.THEME['warning']}]No complete exchange to save.[/{self.THEME['warning']}]"
-            )
-            return
-
-        # Parse optional filename from command
-        parts = command.strip().split(maxsplit=1)
-        if len(parts) > 1:
-            filename = parts[1].strip()
-            # Sanitize filename
-            filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
-            if not filename.endswith('.md'):
-                filename += '.md'
-        else:
-            # Auto-generate filename
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-            filename = f"artemis_{timestamp}.md"
-
-        # Ensure save directory exists
-        save_dir = Path(_config.data_directory)
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        # Handle filename collision
-        filepath = save_dir / filename
-        if filepath.exists():
-            base = filepath.stem
-            ext = filepath.suffix
-            counter = 2
-            while filepath.exists():
-                filepath = save_dir / f"{base}_{counter}{ext}"
-                counter += 1
-
-        # Format markdown content
-        timestamp_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        content = f"""# Query
-
-{last_user}
-
-# Response
-
-{last_assistant}
-
----
-*Saved: {timestamp_str}*
-"""
-
-        # Write file
+        """Save the last user/assistant exchange to a markdown file."""
         try:
-            filepath.write_text(content, encoding='utf-8')
-
-            # Calculate stats
-            file_size = filepath.stat().st_size
-            word_count = len(content.split())
-            query_preview = last_user[:50] + "..." if len(last_user) > 50 else last_user
-
-            # Build save panel
-            save_table = Table(box=None, show_header=False, show_edge=False, padding=(0, 1))
-            save_table.add_column("Label", style=f"bold {self.THEME['primary']}")
-            save_table.add_column("Value", style=self.THEME['text'])
-            save_table.add_row("File", str(filepath))
-            save_table.add_row("Size", f"{file_size:,} bytes  |  {word_count:,} words")
-            save_table.add_row("Query", query_preview)
-
-            self.console.print("")
-            save_panel = Panel(
-                save_table,
-                title="save",
-                title_align="left",
-                border_style=self.THEME["dim"],
-                box=box.ROUNDED,
-                padding=(1, 2),
-                width=self._panel_width,
-            )
-            self.console.print(save_panel)
-            self.console.print("")
+            r = frontend_io.save_last_exchange(command, self.core.messages)
+        except ValueError as e:
+            self._warn(str(e))
+            return
         except OSError as e:
-            self.console.print(
-                f"[{self.THEME['error']}]Failed to save: {e}[/{self.THEME['error']}]"
-            )
+            self._error(f"Failed to save: {e}")
+            return
+
+        self._print_result_panel("save", [
+            ("File", str(r.filepath)),
+            ("Size", f"{r.size:,} bytes  |  {r.words:,} words"),
+            ("Query", r.preview),
+        ])
+
+    def export_session(self, command: str) -> None:
+        """Export the whole session to a markdown file."""
+        try:
+            r = frontend_io.export_session(command, self.welcome_message, self.session_turns)
+        except ValueError as e:
+            self._warn(str(e))
+            return
+        except OSError as e:
+            self._error(f"Failed to export: {e}")
+            return
+
+        self._print_result_panel("export", [
+            ("File", str(r.filepath)),
+            ("Size", f"{r.size:,} bytes  |  {r.words:,} words"),
+            ("Turns", str(r.turns)),
+        ])
 
     def show_session_cost(self) -> None:
         """Display the cost of the current session with per-context breakdown."""
@@ -355,17 +319,11 @@ class ArtemisAI:
         cost_table.add_column("$ Out", justify="right", style=self.THEME['text'])
         cost_table.add_column("$ Total", justify="right", style=f"bold {self.THEME['primary']}")
 
-        # Sort: "main" first, then agents alphabetically
-        sorted_contexts = sorted(costs.keys(), key=lambda x: (x != "main", x))
-
-        for ctx in sorted_contexts:
-            data = costs[ctx]
+        for ctx, data in frontend_io.sorted_cost_contexts(costs):
             ctx_total = data['input_cost'] + data['output_cost']
-            # Shorten model name for display
-            model_short = data['model'].split('/')[-1] if '/' in data['model'] else data['model']
             cost_table.add_row(
                 ctx,
-                model_short,
+                frontend_io.short_model_name(data['model']),
                 f"{data['input_tokens']:,}",
                 f"{data['output_tokens']:,}",
                 f"${data['input_cost']:.4f}",
@@ -414,8 +372,8 @@ class ArtemisAI:
         while True:
             try:
                 # Get user input with styled prompt
-                user_input = await asyncio.get_event_loop().run_in_executor(
-                    None, 
+                user_input = await asyncio.get_running_loop().run_in_executor(
+                    None,
                     lambda: session.prompt()
                 )
 
@@ -435,6 +393,11 @@ class ArtemisAI:
                 # Handle /save command
                 if user_input.strip().lower().startswith('/save'):
                     self.save_last_exchange(user_input)
+                    continue
+
+                # Handle /export command
+                if user_input.strip().lower().startswith('/export'):
+                    self.export_session(user_input)
                     continue
 
                 # Handle /cost command

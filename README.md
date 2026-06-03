@@ -75,6 +75,24 @@ Routing-by-text-interpretation is avoided. The LLM is reserved for actual judgem
 
 ## Install
 
+One-line install (clones into `~/.local/share/artemis`, sets up a venv, drops an `arti` launcher into `~/.local/bin`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nesdeq/artemis/main/install.sh | bash
+```
+
+Prefer to inspect before running (you should):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nesdeq/artemis/main/install.sh -o install.sh
+less install.sh
+bash install.sh
+```
+
+Override locations with env vars: `ARTEMIS_HOME=/custom/path BIN_DIR=$HOME/bin bash install.sh`. Re-run the installer to update an existing checkout.
+
+### Manual install
+
 ```bash
 git clone https://github.com/nesdeq/artemis.git
 cd artemis
@@ -114,7 +132,7 @@ Anything [litellm](https://github.com/BerriAI/litellm) supports works — OpenAI
 
 | Agent | Trigger | Output |
 |---|---|---|
-| `PersonalInfo` | always | Encrypted user profile (Fernet/AES). Extracts memories, classifies persistence (core/stable/situational/ephemeral), retains accordingly. |
+| `PersonalInfo` | always | Encrypted user profile (Fernet/AES). One LLM call per turn extracts memorable info and marks which existing entries it replaces. Retention buckets: core (forever) / situational (30d) / ephemeral (2d). |
 | `LangDetect` | always | ISO 639-1 directive — main LLM responds in the user's language. |
 | `OnlineSearch` | LLM-decided | SERP-API web search with smart depth (quick = past day; thorough = all-time + past day + news). Pages fetched and extracted via trafilatura, with Jina Reader fallback for JS pages. |
 | `URLReader` | URL in input | Fetches and extracts main content from any URL. |
@@ -167,6 +185,7 @@ See `agents/_Agents.md` for the full guide and `agents/OnlineSearch.py` for a no
 |---|---|
 | `/exit` | Quit |
 | `/save [name]` | Save the last exchange as markdown |
+| `/export [name]` | Export the full session — every turn, sources, and token stats — as markdown |
 | `/cost` | Per-context token + cost breakdown (main + each agent) |
 
 ## Project layout

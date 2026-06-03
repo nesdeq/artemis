@@ -33,8 +33,12 @@ env/
 
 # Local data
 /data/
-*.log
-.env
-.env.local
-
 data
+*.log
+*.tmp
+.env*
+*.pinf*
+
+# Claude Code / local tooling
+.claude/
+node_modules/
