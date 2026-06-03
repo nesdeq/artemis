@@ -60,7 +60,7 @@ class Agent:
         self.user = user
         self.llm = LLMInterface(
             _config.agent_llm,
-            reasoning_effort=getattr(_config, 'agent_ro', None),
+            reasoning_effort=_config.agent_ro,
             context=name,
         )
         self.metadata: Dict[str, Any] = {}

@@ -2,7 +2,7 @@
 
 A terminal AI assistant built around **parallel, independent agents**. No router, no manager, no tool-call schema — every agent decides for itself whether it has something to add to the current turn, and the ones that do run concurrently. Their outputs are stitched into the message context before the main LLM ever sees it.
 
-![Artemis CLI](screenshot.png)
+![Artemis](screenshot.png)
 
 ## The idea
 
@@ -73,6 +73,13 @@ Each agent's `should_process` gate is the cheapest check that's still correct:
 
 Routing-by-text-interpretation is avoided. The LLM is reserved for actual judgement: *do you need fresh information?*, *is this English?*, *which memories should I update?*.
 
+## Interfaces
+
+Two frontends, one engine (`core.py`) — same agents, same commands, same config:
+
+- **TUI** (`tui.py`) — a [Textual](https://textual.textualize.io/) interface: streaming markdown, switchable themes, history search. This is what the `arti` launcher runs after install. Start with `arti` or `python tui.py`.
+- **CLI** (`cli.py`) — the classic `rich` + `prompt_toolkit` line interface. Start with `python cli.py`.
+
 ## Install
 
 One-line install (clones into `~/.local/share/artemis`, sets up a venv, drops an `arti` launcher into `~/.local/bin`):
@@ -80,6 +87,8 @@ One-line install (clones into `~/.local/share/artemis`, sets up a venv, drops an
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nesdeq/artemis/main/install.sh | bash
 ```
+
+Then run `arti` (the TUI). Make sure `~/.local/bin` is on your `PATH`.
 
 Prefer to inspect before running (you should):
 
@@ -106,12 +115,14 @@ Set credentials:
 export OPENAI_API_KEY="..."        # or any provider litellm supports
 export SERP_API_KEY="..."          # for web search (serper.dev)
 export ENCKEY="..."                # encryption key for personal memory
+export HUE_BRIDGE_IP="..."         # optional, only for the latent HueLights agent
 ```
 
-Run:
+Run either interface:
 
 ```bash
-python cli.py
+python tui.py    # Textual TUI (what `arti` launches)
+python cli.py    # classic CLI
 ```
 
 ## Models
@@ -179,7 +190,9 @@ Each agent gets:
 
 See `agents/_Agents.md` for the full guide and `agents/OnlineSearch.py` for a non-trivial reference.
 
-## CLI commands
+## Commands
+
+Available in both the TUI and the CLI:
 
 | Command | Action |
 |---|---|
@@ -192,9 +205,12 @@ See `agents/_Agents.md` for the full guide and `agents/OnlineSearch.py` for a no
 
 ```
 artemis/
-├── cli.py                  # terminal UI (rich + prompt_toolkit)
+├── tui.py                  # Textual TUI (default interface; launched by `arti`)
+├── cli.py                  # classic CLI (rich + prompt_toolkit)
+├── frontend_io.py          # shared save/export/cost logic for both frontends
 ├── core.py                 # orchestrator: agent lifecycle, context assembly, streaming
 ├── _config.py              # all configuration in one place
+├── install.sh              # one-line installer (clone + venv + `arti` launcher)
 ├── llms/
 │   └── LLMInterface.py     # litellm wrapper, exact usage tracking via stream_options
 ├── agents/
