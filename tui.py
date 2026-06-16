@@ -1,11 +1,11 @@
 """
-tui.py — TUI-first alternative to cli.py.
+tui.py — the Artemis TUI frontend.
 
-Same backend (ArtemisCore), same commands (/save, /export, /cost, /exit).
+Backend: ArtemisCore. Commands: /save, /export, /cost, /exit.
 Built on Textual; uses Textual's theme system. The parchment look is a
 registered theme — switch via the command palette to any other theme.
 
-Run with:  python tui.py
+Run with:  python tui.py   (or the `arti` launcher)
 """
 
 # Silence library logging before any other imports
@@ -61,8 +61,8 @@ class HistoryInput(Input):
     - Ctrl+R    → reverse incremental search; status shown in border_title
     - Escape    → exit search mode
 
-    History is read/written in the same format as cli.py's prompt_toolkit
-    PromptSession, so both frontends share the same file.
+    History is read/written in prompt_toolkit's FileHistory format — the
+    established on-disk format for .artemis_history.
     """
 
     BINDINGS = [
@@ -249,6 +249,18 @@ class WelcomeBanner(Static):
     def __init__(self, message: str):
         body = f"[$text-muted]⊰[/]  [b $primary]{message}[/]  [$text-muted]⊱[/]"
         super().__init__(body, markup=True, classes="welcome")
+
+
+class WelcomeHint(Static):
+    """One-line capability hint shown under the welcome banner on first run."""
+
+    def __init__(self):
+        body = (
+            "[$text-muted]ask anything · paste a URL or file path · [/]"
+            "[$secondary]!news !games !finance[/]"
+            "[$text-muted] · [/][$secondary]/save /export /cost /exit[/]"
+        )
+        super().__init__(body, markup=True, classes="welcome-hint")
 
 
 class UserMessage(Static):
@@ -450,8 +462,13 @@ class ArtemisTUI(App):
 
     .welcome {
         text-align: center;
-        margin: 1 0 2 0;
+        margin: 2 0 0 0;
         color: $primary;
+    }
+
+    .welcome-hint {
+        text-align: center;
+        margin: 0 0 2 0;
     }
 
     UserMessage {
@@ -493,6 +510,29 @@ class ArtemisTUI(App):
         border-left: thick $primary 30%;
         color: $text-muted;
         background: $background;
+    }
+
+    ArtemisMessage MarkdownH5, ArtemisMessage MarkdownH6 {
+        color: $primary;
+        background: $background;
+        text-style: bold;
+    }
+
+    ArtemisMessage MarkdownBullet {
+        color: $secondary;
+    }
+
+    ArtemisMessage MarkdownHorizontalRule {
+        border-bottom: dashed $primary 30%;
+    }
+
+    ArtemisMessage MarkdownTable {
+        border: round $primary 30%;
+    }
+
+    ArtemisMessage MarkdownTH {
+        color: $primary;
+        text-style: bold;
     }
 
     .thinking {
@@ -577,19 +617,29 @@ class ArtemisTUI(App):
             )
             return
         self.welcome_message = welcome
-        self.query_one("#chat", VerticalScroll).mount(WelcomeBanner(welcome))
+        self._mount_welcome(self.query_one("#chat", VerticalScroll))
+
+    def _mount_welcome(self, chat: VerticalScroll) -> None:
+        """Mount the welcome banner plus the one-line capability hint."""
+        chat.mount(WelcomeBanner(self.welcome_message or ""))
+        chat.mount(WelcomeHint())
 
     # -- Input handling --------------------------------------------------
 
     @on(Input.Submitted, "#prompt")
     async def _on_submit(self, event: Input.Submitted) -> None:
         text = event.value.strip()
-        if text:
-            prompt = self.query_one("#prompt", HistoryInput)
-            prompt.append_to_history(text)
-        event.input.value = ""
-        if not text or self._busy:
+        if not text:
+            event.input.value = ""
             return
+        if self._busy:
+            # Still streaming a reply. Keep the user's text in the box (don't
+            # clear it or push it to history) so the message isn't silently
+            # dropped — they can resend the instant the response lands.
+            self.bell()
+            return
+        self.query_one("#prompt", HistoryInput).append_to_history(text)
+        event.input.value = ""
         try:
             if text.startswith("/"):
                 await self._handle_command(text)
@@ -760,7 +810,7 @@ class ArtemisTUI(App):
         chat = self.query_one("#chat", VerticalScroll)
         await chat.remove_children()
         if self.welcome_message:
-            chat.mount(WelcomeBanner(self.welcome_message))
+            self._mount_welcome(chat)
 
 
 if __name__ == "__main__":

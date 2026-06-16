@@ -27,32 +27,6 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
-# =============================================================================
-# SHARED UI CONSTANTS
-# =============================================================================
-
-# Theme colors for all interfaces (CLI, Audio, etc.)
-UI_THEME = {
-    "primary": "deep_sky_blue1",
-    "secondary": "purple3",
-    "accent": "spring_green2",
-    "warning": "gold1",
-    "error": "red1",
-    "background": "grey11",
-    "text": "white",
-    "dim": "grey50",
-}
-
-# ASCII art logo
-LOGO = """
-  █████╗ ██████╗ ████████╗███████╗███╗   ███╗██╗███████╗
- ██╔══██╗██╔══██╗╚══██╔══╝██╔════╝████╗ ████║██║██╔════╝
- ███████║██████╔╝   ██║   █████╗  ██╔████╔██║██║███████╗
- ██╔══██║██╔══██╗   ██║   ██╔══╝  ██║╚██╔╝██║██║╚════██║
- ██║  ██║██║  ██║   ██║   ███████╗██║ ╚═╝ ██║██║███████║
- ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝     ╚═╝╚═╝╚══════╝
-        """
-
 # Shared MarkItDown instance (thread-safe, stateless)
 shared_markitdown = MarkItDown(enable_plugins=False)
 
@@ -186,6 +160,21 @@ def clean_html(html_content: str) -> str:
         # Fallback to basic regex stripping if markitdown fails
         clean = re.sub(r'<[^>]+>', '', html_content)
         return re.sub(r'\s+', ' ', clean).strip()
+
+
+def maybe_summarize(llm: Any, text: str, max_words: int) -> str:
+    """Summarize fetched web content when summarize_fetched_content is enabled.
+
+    Shared by OnlineSearch and ReadURLs. On summarization failure the original
+    text is kept — a failed summary must never drop the content.
+    """
+    if not _config.summarize_fetched_content:
+        return text
+    try:
+        return llm.summarize(text, max_words=max_words)
+    except Exception as e:
+        logger.error(f"Error summarizing content: {e}")
+        return text
 
 
 # Compiled URL pattern for performance (used by both extract_urls and contains_urls)

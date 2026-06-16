@@ -1,4 +1,4 @@
-# News.py
+"""News agent: aggregate RSS stories via !news / !games / !finance bang commands."""
 import logging
 import time
 from typing import Dict, List, Optional, Set
@@ -9,7 +9,10 @@ import requests
 
 import _config
 from .Agent import Agent
-from tools.utils import DEFAULT_USER_AGENT, clean_html, format_blocks, parallel_map
+from tools.utils import (
+    DEFAULT_USER_AGENT, clean_html, format_blocks, format_record,
+    parallel_map, take_within_token_budget,
+)
 
 REQUEST_HEADERS = {'User-Agent': DEFAULT_USER_AGENT}
 
@@ -119,6 +122,14 @@ class DailyStoriesAgent(Agent):
     def _create_context(self, stories: List[Dict[str, str]]) -> str:
         if not stories:
             return "No stories available at this time."
-        domains = sorted({s['source_domain'] for s in stories})
-        return format_blocks(stories, self._CONTEXT_FIELDS,
+        # Bound the injected context the same way OnlineSearch / ReadURLs do — a
+        # single bang can pull hundreds of entries across dozens of feeds, which
+        # would otherwise dump unbounded text into the turn.
+        kept, _ = take_within_token_budget(
+            stories, lambda s: format_record(s, self._CONTEXT_FIELDS),
+            _config.max_context_tokens,
+        )
+        self.metadata["stories_included"] = len(kept)
+        domains = sorted({s['source_domain'] for s in kept})
+        return format_blocks(kept, self._CONTEXT_FIELDS,
                              header="Sources: " + ", ".join(domains))

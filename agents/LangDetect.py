@@ -1,4 +1,4 @@
-# LangDetect.py
+"""LangDetect agent: detect the user's language and direct the main LLM to match it."""
 import logging
 from typing import Optional
 
@@ -35,8 +35,11 @@ class DetectLanguageAgent(Agent):
                 prompt, max_tokens=_config.lang_detect_max_tokens
             ).strip().lower()
 
-            if not detected or not detected.isalpha() or len(detected) != 2:
-                logger.warning(f"Invalid language code: {detected}, defaulting to 'en'")
+            # 'un' is the model's "unknown" sentinel — fall back to en rather than
+            # emitting a nonsensical "respond in language: un" directive.
+            if (not detected or not detected.isalpha()
+                    or len(detected) != 2 or detected == "un"):
+                logger.warning(f"Invalid/unknown language code: {detected}, defaulting to 'en'")
                 detected = "en"
 
             self.metadata["detected_language"] = detected

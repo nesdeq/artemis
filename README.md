@@ -2,8 +2,6 @@
 
 A terminal AI assistant built around **parallel, independent agents**. No router, no manager, no tool-call schema — every agent decides for itself whether it has something to add to the current turn, and the ones that do run concurrently. Their outputs are stitched into the message context before the main LLM ever sees it.
 
-![Artemis](screenshot.png)
-
 ## The idea
 
 Most assistant frameworks centralise control: user input goes through a router, the router picks tools, results funnel back through the same bottleneck. That works, but it makes the router the bottleneck for both latency and capability.
@@ -73,12 +71,11 @@ Each agent's `should_process` gate is the cheapest check that's still correct:
 
 Routing-by-text-interpretation is avoided. The LLM is reserved for actual judgement: *do you need fresh information?*, *is this English?*, *which memories should I update?*.
 
-## Interfaces
+## Interface
 
-Two frontends, one engine (`core.py`) — same agents, same commands, same config:
+One engine (`core.py`), one frontend:
 
 - **TUI** (`tui.py`) — a [Textual](https://textual.textualize.io/) interface: streaming markdown, switchable themes, history search. This is what the `arti` launcher runs after install. Start with `arti` or `python tui.py`.
-- **CLI** (`cli.py`) — the classic `rich` + `prompt_toolkit` line interface. Start with `python cli.py`.
 
 ## Install
 
@@ -118,11 +115,10 @@ export ENCKEY="..."                # encryption key for personal memory
 export HUE_BRIDGE_IP="..."         # optional, only for the latent HueLights agent
 ```
 
-Run either interface:
+Run it:
 
 ```bash
 python tui.py    # Textual TUI (what `arti` launches)
-python cli.py    # classic CLI
 ```
 
 ## Models
@@ -130,10 +126,10 @@ python cli.py    # classic CLI
 Two tiers. Configure in `_config.py`:
 
 ```python
-llm = "openai/gpt-5.1"        # main conversation model
+llm = "openai/gpt-5.1"           # main conversation model
 agent_llm = "openai/gpt-5-mini"  # cheaper, faster — used by agents
 
-ro = "medium"                  # main reasoning effort
+ro = "high"                    # main reasoning effort
 agent_ro = "medium"            # agent reasoning effort
 ```
 
@@ -183,7 +179,7 @@ Done. Your agent's gate is called in parallel with every other agent's, and if i
 
 Each agent gets:
 - `self.llm` — `LLMInterface` configured for the agent model, with cost tracking under the agent's name
-- `self.metadata` — surfaced in the CLI sources panel
+- `self.metadata` — surfaced in the sources panel
 - `self.user` — current user identifier
 - `Agent.get_executor()` — shared `ThreadPoolExecutor` for fan-out I/O
 - `tools.utils.parallel_map(items, fn, executor, timeout)` — drop-in helper for concurrent I/O with real timeout enforcement
@@ -192,7 +188,7 @@ See `agents/_Agents.md` for the full guide and `agents/OnlineSearch.py` for a no
 
 ## Commands
 
-Available in both the TUI and the CLI:
+Available in the TUI:
 
 | Command | Action |
 |---|---|
@@ -205,9 +201,8 @@ Available in both the TUI and the CLI:
 
 ```
 artemis/
-├── tui.py                  # Textual TUI (default interface; launched by `arti`)
-├── cli.py                  # classic CLI (rich + prompt_toolkit)
-├── frontend_io.py          # shared save/export/cost logic for both frontends
+├── tui.py                  # Textual TUI (launched by `arti`)
+├── frontend_io.py          # save/export/cost logic for the TUI
 ├── core.py                 # orchestrator: agent lifecycle, context assembly, streaming
 ├── _config.py              # all configuration in one place
 ├── install.sh              # one-line installer (clone + venv + `arti` launcher)
@@ -235,7 +230,7 @@ Everything persistent lives in `~/.artemis/` (or `./data/` if it exists in the p
 | File | Contents |
 |---|---|
 | `.pinf` / `.pinf_<hash>` | Encrypted personal memory store (Fernet) |
-| `.artemis_history` | CLI command history |
+| `.artemis_history` | Command history |
 | `artemis_*.md` | Saved chat exports |
 
 Personal memory is encrypted at rest with a key derived from `ENCKEY` via PBKDF2-SHA256. No cloud sync, no telemetry. Inspect what's stored:

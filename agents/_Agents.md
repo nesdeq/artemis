@@ -86,7 +86,7 @@ You override two methods.
 2. **Gate** — for every user turn, `should_process(...)` runs in parallel across all agents.
 3. **Run** — only agents that returned `True` from the gate get `process(...)` called, in parallel.
 4. **Inject** — non-`None` returns get formatted as a `### <agent name>` markdown section under a "Background context" header and appended to the user message for that turn only.
-5. **Metadata** — `agent.metadata` is read after `process` and surfaced in the CLI sources panel.
+5. **Metadata** — `agent.metadata` is read after `process` and surfaced in the sources panel.
 
 Agent context is ephemeral: it lives for one request only. Conversation history persists; agent enrichment does not.
 
@@ -170,7 +170,7 @@ self.llm.generate_single_response(prompt, max_tokens=64)        # complete-and-r
 self.llm.summarize(text, max_words=200)                         # convenience
 ```
 
-Costs are tracked per-context (the `context` kwarg defaults to the agent's name). Use `/cost` in the CLI to see the breakdown.
+Costs are tracked per-context (the `context` kwarg defaults to the agent's name). Use `/cost` in the TUI to see the breakdown.
 
 ## Configuration
 
@@ -186,7 +186,7 @@ If you need a new tunable, add it to `_config.py` rather than introducing a lite
 
 ## Metadata
 
-`self.metadata` is a free-form dict surfaced in the CLI sources panel. Reset it at the top of `process` and populate it with anything the user might want to see — URLs hit, queries run, files read, stories fetched. Keep keys lowercase and descriptive.
+`self.metadata` is a free-form dict surfaced in the sources panel. Reset it at the top of `process` and populate it with anything the user might want to see — URLs hit, queries run, files read, stories fetched. Keep keys lowercase and descriptive.
 
 ```python
 def process(self, user_input, last_response=None):

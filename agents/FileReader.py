@@ -1,4 +1,4 @@
-# FileReader.py
+"""FileReader agent: read text/document files referenced by path in user input."""
 import logging
 import os
 import re

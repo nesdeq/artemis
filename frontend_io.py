@@ -1,9 +1,9 @@
 """
-Shared frontend I/O for cli.py and tui.py.
+Frontend I/O helpers for tui.py.
 
 Pure functions for save / export file resolution and content generation, plus
-helpers for /cost row preparation. No rendering — the frontends do that
-their own way (rich Panels vs Textual widgets).
+helpers for /cost row preparation. No rendering — the TUI renders the results
+itself with Textual widgets.
 """
 
 from __future__ import annotations

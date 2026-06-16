@@ -11,6 +11,7 @@ import os
 
 # Main LLM for conversation
 llm = "openai/gpt-5.1"  # Latest with adaptive reasoning (minimal to xhigh)
+#llm = "gemini/gemini-3.5-flash"  # Reasoning model; reasoning_effort -> thinkingLevel (GA 2026-05)
 #llm = "openai/gpt-5"  # $1.25/$10 per MTok - reasoning (minimal/low/medium/high)
 #llm = "openai/gpt-4.1"  # $2/$8 per MTok - 1M context window
 #llm = "openai/o4-mini"  # $1.10/$4.40 per MTok - fast reasoning
@@ -32,8 +33,9 @@ llm = "openai/gpt-5.1"  # Latest with adaptive reasoning (minimal to xhigh)
 #llm = "ollama/phi4"
 
 # LLM for agents (usually faster/cheaper model)
-#agent_llm = "openai/gpt-5-nano"  # $0.05/$0.40 per MTok - best value for classification
 agent_llm = "openai/gpt-5-mini"  # $0.25/$2.00 per MTok - more capable
+#agent_llm = "gemini/gemini-3.5-flash"  # Reasoning model
+#agent_llm = "openai/gpt-5-nano"  # $0.05/$0.40 per MTok - best value for classification
 #agent_llm = "openai/gpt-4.1-mini"  # 1M context
 #agent_llm = "openai/gpt-4o-mini"  # Legacy but stable
 #agent_llm = "anthropic/claude-haiku-4-5-20251001"  # $1/$5 per MTok - fast
@@ -43,15 +45,15 @@ agent_llm = "openai/gpt-5-mini"  # $0.25/$2.00 per MTok - more capable
 #   O-series (o1/o3/o4): low, medium, high
 #   GPT-5 series: minimal, low, medium, high
 #   GPT-5.1 series: minimal, low, medium, high, xhigh
-ro = "medium"  # Uses model-specific defaults if None (minimal/low depending on model)
+#   Gemini 3.x Flash: minimal, low, medium, high (reasoning_effort -> thinkingLevel)
+ro = "high"  # Uses model-specific defaults if None (minimal/low depending on model)
 
-# Reasoning effort for agent LLM.
-# "medium" is a deliberate choice: agent calls (classification, extraction) come
-# out noticeably more reliable than at minimal/low, and the latency is acceptable.
-# Lower it if you want faster/cheaper agents — valid floors per family:
+# Reasoning effort for agent LLM. Higher = more reliable classification/extraction
+# at the cost of latency; lower it for faster/cheaper agents. Valid floors per family:
 #   O-series: "low" (minimal not supported)
 #   GPT-5/5.1: "minimal"
-# LLMInterface auto-validates and falls back to lowest valid if misconfigured.
+#   Gemini 3.x Flash: "minimal"
+# litellm maps reasoning_effort to each provider's native control (drop_params on).
 agent_ro = "medium"
 
 
@@ -82,10 +84,6 @@ streaming = True
 # Lower = faster output, higher = smoother/more readable
 # Recommended: 0.001 (fast), 0.005 (balanced), 0.01 (smooth)
 output_delay = 0.005
-
-# CLI refresh rate (Hz) - how often terminal display updates
-# Separate from output_delay - controls terminal rendering frequency
-cli_refresh_rate = 120
 
 
 # ============================================================================
@@ -164,7 +162,7 @@ memory_relatedness_overlap = 2         # Word overlap to nominate a classifier c
 memory_promotion_reinforcement_threshold = 2  # ephemeral → situational after N reinforcements
 
 # File reading (FileReaderAgent)
-file_reader_max_bytes = 10 * 1024 * 1024   # Skip files larger than this (10 MiB) — PROPOSED, tune freely
+file_reader_max_bytes = 10 * 1024 * 1024   # Skip files larger than this (10 MiB)
 
 # Web content extraction (trafilatura, tools/utils.py)
 trafilatura_download_timeout = 10      # Per-URL HTTP download budget (seconds)
@@ -176,11 +174,6 @@ summary_tokens_per_word = 2
 
 # HueLights action-planning JSON budget
 hue_action_max_tokens = 256
-
-# UI
-cli_panel_max_width = 100
-cli_cost_panel_max_width = 90
-cli_panel_padding = 4                  # Subtracted from term_width when sizing panels
 
 
 # ============================================================================

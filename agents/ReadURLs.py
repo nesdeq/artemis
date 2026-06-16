@@ -1,4 +1,4 @@
-# ReadURLs.py
+"""ReadURLs agent: fetch and extract main content from URLs in user input."""
 import logging
 from typing import Dict, List, Optional
 
@@ -6,7 +6,7 @@ import _config
 from .Agent import Agent
 from tools.utils import (
     extract_urls, fetch_and_extract, format_blocks, format_record,
-    parallel_map, take_within_token_budget,
+    maybe_summarize, parallel_map, take_within_token_budget,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,14 +41,9 @@ class URLReaderAgent(Agent):
                 logger.warning(f"No content extracted from {url}")
                 return None
 
-            content = extracted["text"]
-            if _config.summarize_fetched_content:
-                try:
-                    content = self.llm.summarize(
-                        content, max_words=_config.url_content_summary_words
-                    )
-                except Exception as e:
-                    logger.error(f"Error summarizing content: {e}")
+            content = maybe_summarize(
+                self.llm, extracted["text"], _config.url_content_summary_words
+            )
 
             return {
                 "url": url,
