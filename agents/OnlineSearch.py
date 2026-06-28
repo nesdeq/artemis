@@ -257,8 +257,8 @@ class OnlineSearchAgent(Agent):
             logger.error(f"Error processing {result['href']}: {e}")
             return None
 
-    # Field order matches the legacy output exactly (trailing newline preserved
-    # so token accounting is unchanged).
+    # Trailing newline is part of each entry's rendered form, so
+    # take_within_token_budget counts it when measuring against the budget.
     _CONTEXT_FIELDS = [("Title", "title"), ("URL", "url"),
                        ("Snippet", "snippet"), ("Content", "content")]
 

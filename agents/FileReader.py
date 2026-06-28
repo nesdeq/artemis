@@ -22,9 +22,15 @@ class FileReaderAgent(Agent):
     }
 
     # Never read these — they routinely hold credentials and must not be fed to
-    # the LLM. Checked by extension AND exact name (a bare ".env" has no suffix).
+    # the LLM. Checked by extension AND by name (a bare ".env" has no suffix);
+    # every ".env" variant (.env.local, .env.production, ...) is caught by
+    # _is_sensitive_file.
     _SENSITIVE_EXTENSIONS = {'.env', '.pem', '.key', '.p12', '.pfx', '.crt', '.keystore'}
-    _SENSITIVE_NAMES = {'.env', '.netrc', '.htpasswd', '.pgpass'}
+    _SENSITIVE_NAMES = {
+        '.env', '.netrc', '.htpasswd', '.pgpass',
+        '.git-credentials', '.npmrc', '.pypirc',
+        'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'credentials',
+    }
 
     # Quoted or bare absolute / home-relative path. Stops at whitespace, ', ", :.
     _PATH_RE = re.compile(r'(?<![:/])(?:\'|")?((?:/|~/)(?:[^\'"\s/:]+/?)+)(?:\'|")?')
@@ -54,11 +60,17 @@ class FileReaderAgent(Agent):
         return self._create_context(files)
 
     def _is_safe_path(self, path: str) -> bool:
-        """Reject path-traversal targets and sensitive system locations."""
+        """Reject path-traversal targets and sensitive system locations.
+
+        Target and each blocked directory are resolved before comparison, so a
+        symlinked system path (macOS maps /etc -> /private/etc, and a user
+        symlink can aim into one) can't slip past, and matching is
+        per-component via is_relative_to — '/etcetera' is not under '/etc'.
+        """
         try:
-            resolved = str(Path(path).resolve())
+            resolved = Path(path).resolve()
             for sensitive in self._SENSITIVE_DIRS:
-                if resolved.startswith(sensitive):
+                if resolved.is_relative_to(Path(sensitive).resolve()):
                     logger.warning(f"Blocked access to sensitive path: {path}")
                     return False
             return True
@@ -71,12 +83,11 @@ class FileReaderAgent(Agent):
         matches = self._PATH_RE.findall(text)
         out: List[str] = []
         for raw in matches:
-            clean = raw.strip("'\"")
-            expanded = os.path.expanduser(clean)
+            expanded = os.path.expanduser(raw)
             if not os.path.exists(expanded) or not self._is_safe_path(expanded):
                 continue
             if os.path.isfile(expanded):
-                out.append(clean)
+                out.append(raw)
         return out
 
     def _read_files(self, filenames: List[str]) -> List[Dict[str, Any]]:
@@ -109,13 +120,20 @@ class FileReaderAgent(Agent):
 
     def _read_file_content(self, filename: str) -> Optional[str]:
         p = Path(filename)
-        suffix = p.suffix.lower()
-        if suffix in self._SENSITIVE_EXTENSIONS or p.name.lower() in self._SENSITIVE_NAMES:
+        if self._is_sensitive_file(p):
             logger.warning(f"Refusing to read sensitive file: {filename}")
             return None
-        if suffix in self.TEXT_EXTENSIONS:
+        if p.suffix.lower() in self.TEXT_EXTENSIONS:
             return self._read_text_file(filename)
         return self._read_with_markitdown(filename)
+
+    def _is_sensitive_file(self, p: Path) -> bool:
+        """True for credential-bearing files: a sensitive extension or name, or
+        any .env variant (.env, .env.local, .env.production, ...)."""
+        name = p.name.lower()
+        if name == '.env' or name.startswith('.env.'):
+            return True
+        return p.suffix.lower() in self._SENSITIVE_EXTENSIONS or name in self._SENSITIVE_NAMES
 
     def _read_text_file(self, filename: str) -> Optional[str]:
         for encoding in ('utf-8', 'latin-1', 'cp1252'):

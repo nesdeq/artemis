@@ -64,8 +64,7 @@ class DailyStoriesAgent(Agent):
 
             if 'feedburner.com' in domain:
                 path_parts = parsed.path.strip('/').split('/')
-                if path_parts:
-                    domain = path_parts[0]
+                domain = path_parts[0]
             else:
                 if domain.startswith('www.'):
                     domain = domain[4:]

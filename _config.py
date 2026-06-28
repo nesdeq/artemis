@@ -167,7 +167,11 @@ file_reader_max_bytes = 10 * 1024 * 1024   # Skip files larger than this (10 MiB
 # Web content extraction (trafilatura, tools/utils.py)
 trafilatura_download_timeout = 10      # Per-URL HTTP download budget (seconds)
 trafilatura_min_extracted_size = 100   # Discard extractions smaller than this (chars)
-trafilatura_min_output_size = 50       # Discard final output smaller than this (chars)
+# Below this, trafilatura's output is treated as too thin (typically a JS page's
+# server-rendered snippet) -> bare_extraction returns None and fetch_and_extract
+# falls back to the Jina renderer for a full read. Real articles clear this easily;
+# the trade-off is that a genuinely short page may also be re-fetched via Jina.
+trafilatura_min_output_size = 1000
 
 # Summarization token budget = words * this (rough tokens-per-word ceiling)
 summary_tokens_per_word = 2

@@ -91,6 +91,7 @@ def _fetch_with_trafilatura(url: str, favor_precision: bool = False,
     doc = trafilatura.bare_extraction(
         html,
         url=url,
+        with_metadata=True,  # populate title/author/date; defaults to False in trafilatura 2.x
         include_tables=True,
         include_links=include_links,
         include_comments=False,
@@ -116,7 +117,6 @@ def _fetch_with_trafilatura(url: str, favor_precision: bool = False,
 def _fetch_with_jina(url: str) -> Optional[dict]:
     """Fallback: extract content via Jina Reader API (handles JS-rendered pages)."""
     import requests
-    import _config
 
     try:
         resp = requests.get(
@@ -312,28 +312,58 @@ def take_within_token_budget(items: Sequence[T], render: Callable[[T], str],
     return kept, total
 
 
+def _balanced_json_span(text: str, open_ch: str, close_ch: str) -> Optional[Tuple[int, str]]:
+    """First balanced open_ch..close_ch span in text, as (start_index, span).
+
+    Tracks nesting depth and skips JSON string literals, so delimiters inside
+    strings don't affect balance. Returns None when no balanced span exists.
+    """
+    start = text.find(open_ch)
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return start, text[start:i + 1]
+    return None
+
+
 def extract_json(text: str) -> Optional[Any]:
-    """Extract and parse JSON from text. Tries direct parse, then regex for arrays/objects."""
-    # Try direct JSON parsing first
+    """Extract and parse JSON from text.
+
+    Tries a direct parse, then recovers the first balanced array or object
+    embedded in surrounding prose / markdown fences. The balanced scan is
+    nesting- and string-literal-aware, so nested structures and delimiters
+    inside strings are handled; whichever of the array/object opens first in
+    the text is tried first, so an object that merely contains an array isn't
+    mis-extracted as that inner array.
+    """
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Try to find a JSON array
-    json_match = re.search(r"\[.*?\]", text, re.DOTALL)
-    if json_match:
+    spans = [s for s in (_balanced_json_span(text, '[', ']'),
+                         _balanced_json_span(text, '{', '}')) if s is not None]
+    for _start, span in sorted(spans, key=lambda s: s[0]):
         try:
-            return json.loads(json_match.group(0))
+            return json.loads(span)
         except json.JSONDecodeError:
-            pass
-
-    # Try to find a JSON object
-    json_match = re.search(r"\{.*\}", text, re.DOTALL)
-    if json_match:
-        try:
-            return json.loads(json_match.group())
-        except json.JSONDecodeError:
-            pass
-
+            continue
     return None

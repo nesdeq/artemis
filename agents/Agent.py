@@ -61,7 +61,7 @@ class Agent:
             reasoning_effort=_config.agent_ro,
             context=name,
         )
-        # Every agent MUST populate this. Surfaced in the CLI sources panel.
+        # Every agent MUST populate this. Surfaced in the sources panel.
         self.metadata: Dict[str, Any] = {}
 
     def should_process(self, user_input: str, last_response: Optional[str] = None) -> bool:
@@ -89,5 +89,5 @@ class Agent:
             Agent._shared_executor = None
 
     def get_metadata(self) -> Dict[str, Any]:
-        """Read by core.py after process(). Surfaced in CLI sources panel."""
+        """Read by core.py after process(). Surfaced in the sources panel."""
         return self.metadata

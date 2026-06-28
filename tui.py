@@ -30,22 +30,31 @@ from core import ArtemisCore
 from llms.LLMInterface import LLMInterface
 
 
+def _safe(text: object) -> str:
+    """Escape dynamic text for Textual markup: neutralize every '[' so it can't
+    open a tag. textual.markup.escape is not enough — it leaves brackets that
+    aren't followed by a tag-like char (e.g. "['http://x?a=b']"), which the
+    markup tokenizer then mis-parses into a MarkupError that crashes the app.
+    """
+    return str(text).replace("\\", "\\\\").replace("[", r"\[")
+
+
 # ----------------------------------------------------------------------
 # Parchment theme — register once, switchable via command palette
 # ----------------------------------------------------------------------
 
 ARTEMIS_PARCHMENT = Theme(
     name="artemis-parchment",
-    primary="#e8a85a",     # amber
-    secondary="#d97757",   # sepia
-    accent="#e8a85a",
-    background="#1d1612",
-    surface="#241c16",
-    panel="#241c16",
-    foreground="#e8d6b3",  # parchment cream
-    success="#a8c878",
-    warning="#e8b85a",
-    error="#d96f5a",
+    primary="#e0ad73",     # honey — the single hero accent
+    secondary="#cf9a7a",   # soft clay — the quieter accent
+    accent="#e0ad73",
+    background="#191410",   # warm espresso
+    surface="#231c16",      # gently raised panel
+    panel="#231c16",
+    foreground="#ece2d1",   # warm paper white
+    success="#a9c187",      # soft sage
+    warning="#e3b873",      # soft amber
+    error="#dd8a72",        # warm terracotta
     dark=True,
 )
 
@@ -247,8 +256,7 @@ class WelcomeBanner(Static):
     """Initial welcome line."""
 
     def __init__(self, message: str):
-        body = f"[$text-muted]⊰[/]  [b $primary]{message}[/]  [$text-muted]⊱[/]"
-        super().__init__(body, markup=True, classes="welcome")
+        super().__init__(message, markup=False, classes="welcome")
 
 
 class WelcomeHint(Static):
@@ -258,7 +266,7 @@ class WelcomeHint(Static):
         body = (
             "[$text-muted]ask anything · paste a URL or file path · [/]"
             "[$secondary]!news !games !finance[/]"
-            "[$text-muted] · [/][$secondary]/save /export /cost /exit[/]"
+            "[$text-muted] · /save /export /cost /exit[/]"
         )
         super().__init__(body, markup=True, classes="welcome-hint")
 
@@ -267,7 +275,7 @@ class UserMessage(Static):
     """User input echoed with the theme's primary accent."""
 
     def __init__(self, text: str):
-        body = f"[b $primary]you ⟩[/]  [$foreground]{text}[/]"
+        body = f"[b $primary]you[/]   [$foreground]{_safe(text)}[/]"
         super().__init__(body, markup=True, classes="user-msg")
 
 
@@ -276,9 +284,9 @@ class ArtemisMessage(Markdown):
 
     Streaming is driven by a Textual MarkdownStream (created in
     _stream_response), which coalesces incoming bursts and appends only the
-    newly-arrived lines. The previous approach called Markdown.update() on every
-    chunk, re-parsing the entire growing document each time — O(n²) work that
-    made long responses visibly lag. MarkdownStream is the purpose-built fix.
+    newly-arrived lines. This avoids calling Markdown.update() per chunk, which
+    re-parses the entire growing document each time — O(n²) work that makes long
+    responses visibly lag.
     """
 
     def __init__(self):
@@ -286,10 +294,10 @@ class ArtemisMessage(Markdown):
 
 
 class ArtemisLabel(Static):
-    """Small 'artemis ⟩' label rendered above an ArtemisMessage."""
+    """Small 'artemis' label rendered above an ArtemisMessage."""
 
     def __init__(self):
-        super().__init__("[b $secondary]artemis ⟩[/]", markup=True, classes="artemis-label")
+        super().__init__("[b $secondary]artemis[/]", markup=True, classes="artemis-label")
 
 
 class ThinkingIndicator(Static):
@@ -304,7 +312,7 @@ class ThinkingIndicator(Static):
         self._timer = None
 
     def _frame_text(self, i: int) -> str:
-        return f"[$primary]{self.GLYPHS[i % len(self.GLYPHS)]}[/]  [italic $text-muted]thinking[/]"
+        return f"[$secondary]{self.GLYPHS[i % len(self.GLYPHS)]}[/]  [italic $text-muted]thinking[/]"
 
     def on_mount(self) -> None:
         self._timer = self.set_interval(self.INTERVAL, self._tick)
@@ -328,12 +336,20 @@ class SourcesPanel(Static):
             if agent in excluded or not meta:
                 continue
             entries = "   ".join(
-                f"[$text-muted]{k}[/] [$foreground]{v}[/]" for k, v in meta.items()
+                f"[$text-muted]{_safe(k)}[/] [$foreground]{_safe(self._fmt(v))}[/]"
+                for k, v in meta.items()
             )
-            lines.append(f"[b $secondary]{agent}[/]   {entries}")
+            lines.append(f"[b $secondary]{_safe(agent)}[/]   {entries}")
         body = "\n".join(lines)
         super().__init__(body, markup=True, classes="sources")
         self.display = bool(lines)
+
+    @staticmethod
+    def _fmt(value: Any) -> str:
+        """Render a metadata value for display; lists become comma-joined."""
+        if isinstance(value, (list, tuple)):
+            return ", ".join(str(v) for v in value)
+        return str(value)
 
 
 class CostPanel(Vertical):
@@ -344,7 +360,7 @@ class CostPanel(Vertical):
         height: auto;
         margin: 1 0 1 0;
         padding: 1 2;
-        border: round $primary 30%;
+        border: round $secondary 20%;
         background: $surface;
     }
     CostPanel > .cost-title {
@@ -421,9 +437,14 @@ class SystemNotice(Static):
         "error":   "error",
     }
 
-    def __init__(self, title: str, body: str, severity: str = "info"):
+    def __init__(self, title: str, body: str, severity: str = "info",
+                 markup_body: bool = False):
         var = self.SEVERITY_VAR.get(severity, "text-muted")
-        text = f"[b ${var}]› {title}[/]\n{body}"
+        # body carries intentional markup only for the structured save/export
+        # notices (markup_body=True); everything else is plain text and must be
+        # escaped so a stray '[' (error text, a path, a command) can't crash.
+        safe_body = body if markup_body else _safe(body)
+        text = f"[b ${var}]› {_safe(title)}[/]\n{safe_body}"
         super().__init__(text, markup=True, classes=f"notice notice-{severity}")
 
 
@@ -446,14 +467,14 @@ class ArtemisTUI(App):
     }
 
     Header {
-        background: $surface;
-        color: $primary;
+        background: $background;
+        color: $foreground 55%;
         height: 1;
     }
 
     #chat {
         background: $background;
-        padding: 1 3;
+        padding: 1 4;
         /* Hide the scrollbar entirely. show_vertical_scrollbar stays True on
            overflow (it is overflow-driven, not size-driven), so mouse-wheel and
            keyboard scrolling keep working — only the visible bar is gone. */
@@ -462,13 +483,15 @@ class ArtemisTUI(App):
 
     .welcome {
         text-align: center;
-        margin: 2 0 0 0;
+        margin: 3 0 1 0;
         color: $primary;
+        text-style: italic;
     }
 
     .welcome-hint {
         text-align: center;
-        margin: 0 0 2 0;
+        margin: 0 0 3 0;
+        color: $text-muted;
     }
 
     UserMessage {
@@ -478,7 +501,7 @@ class ArtemisTUI(App):
 
     ArtemisLabel {
         height: auto;
-        margin: 0;
+        margin: 1 0 0 0;
         padding: 0;
     }
 
@@ -494,8 +517,15 @@ class ArtemisTUI(App):
         color: $foreground;
     }
 
+    /* Inline code reads as a soft warm chip, not a highlighter swatch. */
+    ArtemisMessage MarkdownBlock > .code_inline {
+        background: $primary 12% !important;
+        color: $foreground !important;
+    }
+
     ArtemisMessage MarkdownH1, ArtemisMessage MarkdownH2,
-    ArtemisMessage MarkdownH3, ArtemisMessage MarkdownH4 {
+    ArtemisMessage MarkdownH3, ArtemisMessage MarkdownH4,
+    ArtemisMessage MarkdownH5, ArtemisMessage MarkdownH6 {
         color: $primary;
         background: $background;
         text-style: bold;
@@ -507,15 +537,9 @@ class ArtemisTUI(App):
     }
 
     ArtemisMessage MarkdownBlockQuote {
-        border-left: thick $primary 30%;
-        color: $text-muted;
+        border-left: solid $secondary 55%;
+        color: $foreground 75%;
         background: $background;
-    }
-
-    ArtemisMessage MarkdownH5, ArtemisMessage MarkdownH6 {
-        color: $primary;
-        background: $background;
-        text-style: bold;
     }
 
     ArtemisMessage MarkdownBullet {
@@ -523,11 +547,11 @@ class ArtemisTUI(App):
     }
 
     ArtemisMessage MarkdownHorizontalRule {
-        border-bottom: dashed $primary 30%;
+        border-bottom: dashed $primary 20%;
     }
 
     ArtemisMessage MarkdownTable {
-        border: round $primary 30%;
+        border: round $primary 15%;
     }
 
     ArtemisMessage MarkdownTH {
@@ -545,7 +569,7 @@ class ArtemisTUI(App):
         height: auto;
         margin: 0 0 1 2;
         padding: 0 0 0 2;
-        border-left: thick $primary 30%;
+        border-left: solid $secondary 55%;
         color: $text-muted;
     }
 
@@ -553,25 +577,25 @@ class ArtemisTUI(App):
         height: auto;
         margin: 1 0 1 0;
         padding: 1 2;
-        border: round $primary 30%;
+        border: round $primary 18%;
         background: $surface;
     }
 
-    .notice-warning { border: round $warning; }
-    .notice-error   { border: round $error; }
-    .notice-success { border: round $success; }
+    .notice-warning { border: round $warning 35%; }
+    .notice-error   { border: round $error 35%; }
+    .notice-success { border: round $success 35%; }
 
     #prompt {
         background: $background !important;
         background-tint: transparent !important;
         color: $foreground;
-        border: round $primary 30% !important;
-        margin: 0 3 0 3;
+        border: round $primary 25% !important;
+        margin: 0 4 1 4;
         padding: 0 1;
     }
 
     #prompt:focus {
-        border: round $primary !important;
+        border: round $primary 60% !important;
         background-tint: transparent !important;
     }
     """
@@ -748,7 +772,8 @@ class ArtemisTUI(App):
         except OSError as e:
             self._mount_notice("save", f"Failed: {e}", severity="error")
             return
-        self._mount_notice("save", self._save_body(r, "query", r.preview), severity="success")
+        self._mount_notice("save", self._save_body(r, "query", r.preview),
+                           severity="success", markup_body=True)
 
     async def _cmd_export(self, command: str) -> None:
         try:
@@ -759,15 +784,20 @@ class ArtemisTUI(App):
         except OSError as e:
             self._mount_notice("export", f"Failed: {e}", severity="error")
             return
-        self._mount_notice("export", self._save_body(r, "turns", str(r.turns)), severity="success")
+        self._mount_notice("export", self._save_body(r, "turns", str(r.turns)),
+                           severity="success", markup_body=True)
 
     @staticmethod
     def _save_body(r, third_label: str, third_value: str) -> str:
-        """Three-line summary used by /save and /export success notices."""
+        """Three-line summary used by /save and /export success notices.
+
+        Returns intentional markup; dynamic values are escaped, so the result
+        must be passed with markup_body=True.
+        """
         return (
-            f"[$text-muted]file[/]   {r.filepath}\n"
+            f"[$text-muted]file[/]   {_safe(r.filepath)}\n"
             f"[$text-muted]size[/]   {r.size:,} bytes  ·  {r.words:,} words\n"
-            f"[$text-muted]{third_label}[/]  {third_value}"
+            f"[$text-muted]{third_label}[/]  {_safe(third_value)}"
         )
 
     async def _cmd_cost(self) -> None:
@@ -784,15 +814,16 @@ class ArtemisTUI(App):
 
     # -- Utility ---------------------------------------------------------
 
-    def _mount_notice(self, title: str, body: str, severity: str = "info") -> None:
+    def _mount_notice(self, title: str, body: str, severity: str = "info",
+                      markup_body: bool = False) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        chat.mount(SystemNotice(title, body, severity=severity))
+        chat.mount(SystemNotice(title, body, severity=severity, markup_body=markup_body))
         chat.scroll_end(animate=False)
 
     def _refresh_subtitle(self, in_tok: int, out_tok: int) -> None:
         total_in = sum(t["input_tokens"] for t in self.session_turns)
         total_out = sum(t["output_tokens"] for t in self.session_turns)
-        model = _config.llm.split("/")[-1] if "/" in _config.llm else _config.llm
+        model = frontend_io.short_model_name(_config.llm)
         if total_in + total_out:
             self.sub_title = (
                 f"{model}  ·  {total_in + total_out:,} session  ·  "

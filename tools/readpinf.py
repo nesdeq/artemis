@@ -26,7 +26,6 @@ import _config
 # ANSI color codes
 class C:
     HEADER = '\033[95m'
-    BLUE = '\033[94m'
     CYAN = '\033[96m'
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
@@ -37,7 +36,7 @@ class C:
 
     @classmethod
     def disable(cls):
-        cls.HEADER = cls.BLUE = cls.CYAN = cls.GREEN = ''
+        cls.HEADER = cls.CYAN = cls.GREEN = ''
         cls.YELLOW = cls.RED = cls.BOLD = cls.DIM = cls.END = ''
 
 
