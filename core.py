@@ -7,7 +7,7 @@ import asyncio
 import datetime
 import json
 import random
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
 import _config
 from agents.Agent import Agent
@@ -55,6 +55,10 @@ class ArtemisCore:
         self.user = user
         self.llm = LLMInterface(context="main")
         self.messages: List[Dict[str, str]] = []
+        # Exact per-agent context injected on the most recent turn (agent name ->
+        # final text, post-summarization). Read by the TUI to populate the
+        # sources expandables. Reset every turn by _format_enriched_context.
+        self.last_agent_contexts: Dict[str, str] = {}
         # system_prompt is populated by update_system_prompt() at the top of
         # every get_ai_response() call — no need to prime it in __init__.
         self.system_prompt = ""
@@ -152,6 +156,7 @@ class ArtemisCore:
         self,
         user_input: str,
         last_response: Optional[str],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Tuple[Dict[str, str], Dict[str, Dict[str, Any]]]:
         """
         Two phases, each fully parallel:
@@ -177,6 +182,28 @@ class ArtemisCore:
             (agent.name, asyncio.create_task(self._process_agent(agent, user_input, last_response)))
             for agent in active
         ]
+
+        # Live progress for the TUI: announce the visible (non-excluded) active
+        # agents, then fire per-agent done/timeout/error as each task settles.
+        # Callbacks run on the event loop (core is a Textual worker coroutine),
+        # so the TUI may update widgets from them directly.
+        if progress_callback is not None:
+            visible = [name for name, _ in named_tasks
+                       if name not in _config.excluded_metadata_agents]
+            if visible:
+                progress_callback({"type": "agents_started", "agents": visible})
+                for name, task in named_tasks:
+                    if name in _config.excluded_metadata_agents:
+                        continue
+                    task.add_done_callback(
+                        lambda t, n=name: progress_callback({
+                            "type": "agent_done",
+                            "agent": n,
+                            "status": ("timeout" if t.cancelled()
+                                       else "error" if t.exception() is not None
+                                       else "done"),
+                        })
+                    )
 
         # One wall-clock deadline for the whole batch. The old per-agent
         # wait_for restarted the clock for each agent in series, so worst-case
@@ -210,7 +237,12 @@ class ArtemisCore:
     # ------------------------------------------------------------------
 
     def _format_enriched_context(self, agent_outputs: Dict[str, str]) -> str:
-        """Render agent outputs as labelled markdown sections."""
+        """Render agent outputs as labelled markdown sections.
+
+        Also records each agent's final injected text in self.last_agent_contexts
+        (post-summarization) so the TUI can surface the exact per-agent context.
+        """
+        self.last_agent_contexts = {}
         sections: List[str] = []
         for name, output in agent_outputs.items():
             text = output.strip()
@@ -222,6 +254,7 @@ class ArtemisCore:
                 except Exception as e:
                     if _config.debug:
                         print(f"Error summarizing {name}: {e}")
+            self.last_agent_contexts[name] = text
             sections.append(f"### {name}\n{text}")
 
         if not sections:
@@ -236,9 +269,14 @@ class ArtemisCore:
     async def get_ai_response(
         self,
         user_input: str,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> AsyncGenerator[Tuple[Optional[str], Dict[str, Any], int, int], None]:
         """
         Process user input and stream the AI response.
+
+        progress_callback (optional) receives live agent-phase events:
+        {"type": "agents_started", "agents": [...]} and
+        {"type": "agent_done", "agent": name, "status": done|timeout|error}.
 
         Yields tuples of (text_chunk, agent_metadata, input_tokens, output_tokens).
         Token counts are zero until the API returns final usage.
@@ -248,7 +286,9 @@ class ArtemisCore:
         if self.messages and self.messages[-1]['role'] == 'assistant':
             last_response = self.messages[-1]['content']
 
-        agent_outputs, agent_metadata = await self._process_all_agents(user_input, last_response)
+        agent_outputs, agent_metadata = await self._process_all_agents(
+            user_input, last_response, progress_callback
+        )
         enriched_context = self._format_enriched_context(agent_outputs)
 
         self.update_system_prompt()
@@ -265,6 +305,7 @@ class ArtemisCore:
         input_tokens = 0
         output_tokens = 0
         full_response = ""
+        errored = False
 
         try:
             # stream_content is a *synchronous* generator that performs blocking
@@ -281,6 +322,17 @@ class ArtemisCore:
                 chunk_data = await asyncio.to_thread(next, stream, _STREAM_END)
                 if chunk_data is _STREAM_END:
                     break
+
+                error = chunk_data.get('error')
+                if error:
+                    # Surface the failure to the caller, but never fold it into
+                    # full_response; an error must not be committed to history
+                    # as if it were the assistant's reply.
+                    errored = True
+                    yield (f"Sorry, I encountered an error: {error}",
+                           agent_metadata, input_tokens, output_tokens)
+                    break
+
                 content = chunk_data.get('content')
                 if content:
                     full_response += content
@@ -293,27 +345,31 @@ class ArtemisCore:
                     input_tokens = usage.get('input_tokens', 0)
                     output_tokens = usage.get('output_tokens', 0)
 
-            if not _config.streaming:
+            if not _config.streaming and not errored:
                 yield full_response, agent_metadata, input_tokens, output_tokens
         except Exception as e:
             if _config.debug:
                 print(f"Error in streaming response: {e}")
-            error_msg = f"Sorry, I encountered an error: {e}"
-            yield error_msg, agent_metadata, input_tokens, output_tokens
-            full_response = error_msg
+            errored = True
+            yield (f"Sorry, I encountered an error: {e}",
+                   agent_metadata, input_tokens, output_tokens)
 
-        self.messages.append({"role": "user", "content": user_input})
-        self.messages.append({"role": "assistant", "content": full_response})
+        # Commit the exchange to history only if it completed cleanly. An errored
+        # turn leaves history untouched (no fake assistant turn, no dangling user
+        # turn), so the next turn's context isn't poisoned and the user can retry.
+        if not errored:
+            self.messages.append({"role": "user", "content": user_input})
+            self.messages.append({"role": "assistant", "content": full_response})
 
-        max_messages = _config.max_conversation_history
-        if len(self.messages) > max_messages:
-            self.messages = self.messages[len(self.messages) - max_messages:]
-            # The conversation opens with an assistant welcome, so a raw tail can
-            # begin on an orphaned assistant turn — which breaks user/assistant
-            # pairing and is rejected by some providers. Drop a leading assistant
-            # so trimmed history always starts on a user turn.
-            if self.messages and self.messages[0]["role"] == "assistant":
-                self.messages = self.messages[1:]
+            max_messages = _config.max_conversation_history
+            if len(self.messages) > max_messages:
+                self.messages = self.messages[len(self.messages) - max_messages:]
+                # The conversation opens with an assistant welcome, so a raw tail
+                # can begin on an orphaned assistant turn, which breaks
+                # user/assistant pairing and is rejected by some providers. Drop a
+                # leading assistant so trimmed history always starts on a user turn.
+                if self.messages and self.messages[0]["role"] == "assistant":
+                    self.messages = self.messages[1:]
 
         if _config.streaming:
             yield None, agent_metadata, input_tokens, output_tokens

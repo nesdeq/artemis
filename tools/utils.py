@@ -8,6 +8,8 @@ import hashlib
 import base64
 import io
 import os
+import socket
+import ipaddress
 import logging
 from concurrent.futures import as_completed, TimeoutError as FuturesTimeoutError
 from typing import Optional, Any, Dict, List, Callable, Sequence, Tuple, TypeVar, Union
@@ -61,6 +63,47 @@ def get_trafilatura_config():
     return _trafilatura_config
 
 
+def _is_safe_public_url(url: str) -> bool:
+    """True only for an http(s) URL whose host resolves entirely to public IPs.
+
+    URLs reaching fetch_and_extract come from web-search result links and
+    user-pasted URLs, not just trusted config. Block non-http(s) schemes and any
+    host that resolves to a loopback / private / link-local / reserved address
+    (e.g. 127.0.0.1, 10.0.0.0/8, 169.254.169.254 cloud metadata) so a hostile
+    link can't turn the fetcher into an SSRF probe of the local network.
+
+    Note: this resolves the host and checks every returned address, but the
+    actual fetch resolves again, so a determined DNS-rebinding attacker could
+    still race it. It raises the bar; it is not a hard sandbox.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (addr.is_loopback or addr.is_private or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+            logger.warning(f"Blocked fetch to non-public address {addr} for {url}")
+            return False
+    return True
+
+
 def fetch_and_extract(url: str, favor_precision: bool = False,
                       include_links: bool = False) -> Optional[dict]:
     """
@@ -68,8 +111,12 @@ def fetch_and_extract(url: str, favor_precision: bool = False,
     falling back to Jina Reader API for JS-rendered pages.
 
     Returns a dict with keys: title, text, author, date, description, hostname
-    or None if extraction fails.
+    or None if extraction fails or the URL is not a safe public http(s) target.
     """
+    if not _is_safe_public_url(url):
+        logger.warning(f"Refusing to fetch unsafe or non-public URL: {url}")
+        return None
+
     result = _fetch_with_trafilatura(url, favor_precision, include_links)
     if result:
         return result
@@ -312,56 +359,67 @@ def take_within_token_budget(items: Sequence[T], render: Callable[[T], str],
     return kept, total
 
 
-def _balanced_json_span(text: str, open_ch: str, close_ch: str) -> Optional[Tuple[int, str]]:
-    """First balanced open_ch..close_ch span in text, as (start_index, span).
+def _iter_balanced_spans(text: str, open_ch: str, close_ch: str):
+    """Yield (start_index, span) for every balanced open_ch..close_ch span.
 
-    Tracks nesting depth and skips JSON string literals, so delimiters inside
-    strings don't affect balance. Returns None when no balanced span exists.
+    Nesting- and string-literal-aware, so delimiters inside JSON strings don't
+    affect balance. Scanning from every opener (not just the first) lets
+    extract_json skip a decoy bracket in prose and still recover valid JSON
+    further along.
     """
-    start = text.find(open_ch)
-    if start == -1:
-        return None
-    depth = 0
-    in_string = False
-    escaped = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == '\\':
-                escaped = True
+    n = len(text)
+    search = 0
+    while True:
+        start = text.find(open_ch, search)
+        if start == -1:
+            return
+        depth = 0
+        in_string = False
+        escaped = False
+        end = None
+        for i in range(start, n):
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
             elif ch == '"':
-                in_string = False
-        elif ch == '"':
-            in_string = True
-        elif ch == open_ch:
-            depth += 1
-        elif ch == close_ch:
-            depth -= 1
-            if depth == 0:
-                return start, text[start:i + 1]
-    return None
+                in_string = True
+            elif ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end is not None:
+            yield start, text[start:end + 1]
+            search = end + 1   # continue past the consumed span
+        else:
+            search = start + 1  # unbalanced from here; try the next opener
 
 
 def extract_json(text: str) -> Optional[Any]:
     """Extract and parse JSON from text.
 
-    Tries a direct parse, then recovers the first balanced array or object
-    embedded in surrounding prose / markdown fences. The balanced scan is
-    nesting- and string-literal-aware, so nested structures and delimiters
-    inside strings are handled; whichever of the array/object opens first in
-    the text is tried first, so an object that merely contains an array isn't
-    mis-extracted as that inner array.
+    Tries a direct parse, then recovers an embedded array or object from
+    surrounding prose / markdown fences. EVERY balanced array- and object-span
+    is considered (string-literal- and nesting-aware) and tried in order of
+    position, so a decoy bracket in leading prose can't shadow valid JSON that
+    follows, and an object that merely contains an array isn't mis-extracted as
+    that inner array (the enclosing object opens at a lower index, so it wins).
     """
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    spans = [s for s in (_balanced_json_span(text, '[', ']'),
-                         _balanced_json_span(text, '{', '}')) if s is not None]
-    for _start, span in sorted(spans, key=lambda s: s[0]):
+    candidates = (list(_iter_balanced_spans(text, '[', ']'))
+                  + list(_iter_balanced_spans(text, '{', '}')))
+    for _start, span in sorted(candidates, key=lambda s: s[0]):
         try:
             return json.loads(span)
         except json.JSONDecodeError:

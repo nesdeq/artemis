@@ -66,7 +66,7 @@ Two important properties:
 Each agent's `should_process` gate is the cheapest check that's still correct:
 
 - `URLReader`, `FileReader`, `News` — pure regex / filesystem checks. URL detection is binary; no need for an LLM.
-- `OnlineSearch` — bangs and URLs short-circuit deterministically; only then does the LLM decide whether to search, what depth, and what queries to run.
+- `OnlineSearch` — `!search`/`!web` forces a search; other bangs and pasted URLs short-circuit to skip; otherwise the LLM decides whether a search is warranted at all (conservatively — not on follow-up chatter or commentary on its own prior answer), then plans the queries, result count, country, language, and recency.
 - `PersonalInfo`, `LangDetect` — always on. They return whatever they have.
 
 Routing-by-text-interpretation is avoided. The LLM is reserved for actual judgement: *do you need fresh information?*, *is this English?*, *which memories should I update?*.
@@ -75,7 +75,7 @@ Routing-by-text-interpretation is avoided. The LLM is reserved for actual judgem
 
 One engine (`core.py`), one frontend:
 
-- **TUI** (`tui.py`) — a [Textual](https://textual.textualize.io/) interface: streaming markdown, switchable themes, history search. This is what the `arti` launcher runs after install. Start with `arti` or `python tui.py`.
+- **TUI** (`tui.py`) — a [Textual](https://textual.textualize.io/) interface: streaming markdown, switchable themes, history search, live per-agent status while agents run, and click-to-expand sources showing the exact context each agent injected. This is what the `arti` launcher runs after install. Start with `arti` or `python tui.py`.
 
 ## Install
 
@@ -141,7 +141,7 @@ Anything [litellm](https://github.com/BerriAI/litellm) supports works — OpenAI
 |---|---|---|
 | `PersonalInfo` | always | Encrypted user profile (Fernet/AES). One LLM call per turn extracts memorable info and marks which existing entries it replaces. Retention buckets: core (forever) / situational (30d) / ephemeral (2d). |
 | `LangDetect` | always | ISO 639-1 directive — main LLM responds in the user's language. |
-| `OnlineSearch` | LLM-decided | SERP-API web search with smart depth (quick = past day; thorough = all-time + past day + news). Pages fetched and extracted via trafilatura, with Jina Reader fallback for JS pages. |
+| `OnlineSearch` | LLM-decided (`!search` forces) | SERP-API web search. The LLM decides whether a search is warranted, then plans every parameter: queries, results per query (1-10), country (`gl`), language (`hl`), recency (`tbs`), and whether to include news. Pages fetched and extracted via trafilatura, with Jina Reader fallback for JS pages. |
 | `URLReader` | URL in input | Fetches and extracts main content from any URL. |
 | `FileReader` | absolute path in input | Reads text, PDF, DOCX, XLSX, CSV, and more (MarkItDown). Path-traversal protected. |
 | `DailyNews` | `!news` `!games` `!finance` | RSS aggregation across 50+ feeds, fetched concurrently. |

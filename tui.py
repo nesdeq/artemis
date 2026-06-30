@@ -22,7 +22,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll, Vertical
 from textual.theme import Theme
-from textual.widgets import DataTable, Header, Input, Markdown, Static
+from textual.widgets import Collapsible, DataTable, Header, Input, Markdown, Static
 
 import _config
 import frontend_io
@@ -326,30 +326,110 @@ class ThinkingIndicator(Static):
         self.update(self._frame_text(self._i))
 
 
-class SourcesPanel(Static):
-    """Sources box rendered under an assistant turn."""
+class AgentActivity(Static):
+    """Live per-agent status while background agents run.
 
-    def __init__(self, metadata: Dict[str, Dict[str, Any]]):
-        excluded = _config.excluded_metadata_agents
+    Replaces the plain 'thinking' indicator on turns where at least one visible
+    (non-excluded) agent is active. Each agent gets a row whose glyph reflects
+    its state: an animated reel while running, then a settled mark.
+    """
+
+    GLYPHS = ThinkingIndicator.GLYPHS
+    INTERVAL = ThinkingIndicator.INTERVAL
+    _SETTLED_GLYPH = {"done": "●", "timeout": "·", "error": "·"}
+    _STATE_COLOR = {
+        "running": "$secondary",
+        "done": "$success",
+        "timeout": "$warning",
+        "error": "$error",
+    }
+
+    def __init__(self, agents: List[str]):
+        super().__init__(markup=True, classes="agent-activity")
+        self._order: List[str] = list(agents)
+        self._states: Dict[str, str] = {name: "running" for name in agents}
+        self._i = 0
+        self._timer = None
+
+    def on_mount(self) -> None:
+        self.update(self._render_rows())
+        self._timer = self.set_interval(self.INTERVAL, self._tick)
+
+    def on_unmount(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+
+    def set_state(self, name: str, state: str) -> None:
+        if name not in self._states:
+            return
+        self._states[name] = state
+        self.update(self._render_rows())
+        # Stop the reel once nothing is left running.
+        if self._timer is not None and not self._any_running():
+            self._timer.stop()
+
+    def _any_running(self) -> bool:
+        return any(s == "running" for s in self._states.values())
+
+    def _tick(self) -> None:
+        self._i += 1
+        self.update(self._render_rows())
+
+    # NOTE: not named _render. That is Textual's internal Widget._render (which
+    # must return a Visual). Shadowing it makes layout treat this str as a Visual.
+    def _render_rows(self) -> str:
+        spinner = self.GLYPHS[self._i % len(self.GLYPHS)]
         lines: List[str] = []
-        for agent, meta in metadata.items():
-            if agent in excluded or not meta:
-                continue
-            entries = "   ".join(
-                f"[$text-muted]{_safe(k)}[/] [$foreground]{_safe(self._fmt(v))}[/]"
-                for k, v in meta.items()
-            )
-            lines.append(f"[b $secondary]{_safe(agent)}[/]   {entries}")
-        body = "\n".join(lines)
-        super().__init__(body, markup=True, classes="sources")
-        self.display = bool(lines)
+        for name in self._order:
+            state = self._states[name]
+            glyph = spinner if state == "running" else self._SETTLED_GLYPH.get(state, "·")
+            color = self._STATE_COLOR.get(state, "$text-muted")
+            lines.append(f"[{color}]{glyph}[/]  [italic $text-muted]{_safe(name)}[/]")
+        return "\n".join(lines)
+
+
+class SourcesPanel(Vertical):
+    """Per-agent sources under an assistant turn.
+
+    Each contributing (non-excluded) agent is a collapsible row: the collapsed
+    title names the agent; expanding reveals its metadata and the exact context
+    it injected into this turn.
+    """
+
+    def __init__(self, metadata: Dict[str, Dict[str, Any]],
+                 contexts: Dict[str, str]):
+        super().__init__(classes="sources")
+        excluded = _config.excluded_metadata_agents
+        # Every non-excluded agent that injected context this turn.
+        self._items = [
+            (name, metadata.get(name, {}), context)
+            for name, context in contexts.items()
+            if name not in excluded
+        ]
+        self.display = bool(self._items)
+
+    def compose(self) -> ComposeResult:
+        for name, meta, context in self._items:
+            # title is plain text (CollapsibleTitle uses Content.from_text), so a
+            # '[' in a name can't open a markup tag, so no escaping needed here.
+            with Collapsible(title=name, collapsed=True, classes="source-item"):
+                meta_text = self._fmt_meta(meta)
+                if meta_text:
+                    yield Static(meta_text, markup=False, classes="source-meta")
+                # markup=False: the injected context is shown verbatim, so any
+                # '[' from URLs / code / paths is literal and can't crash render.
+                yield Static(context or "(no context injected)",
+                             markup=False, classes="source-context")
 
     @staticmethod
-    def _fmt(value: Any) -> str:
-        """Render a metadata value for display; lists become comma-joined."""
-        if isinstance(value, (list, tuple)):
-            return ", ".join(str(v) for v in value)
-        return str(value)
+    def _fmt_meta(meta: Dict[str, Any]) -> str:
+        """One 'key: value' line per metadata entry; lists comma-joined."""
+        lines: List[str] = []
+        for k, v in meta.items():
+            if isinstance(v, (list, tuple)):
+                v = ", ".join(str(x) for x in v)
+            lines.append(f"{k}: {v}")
+        return "\n".join(lines)
 
 
 class CostPanel(Vertical):
@@ -565,12 +645,41 @@ class ArtemisTUI(App):
         color: $text-muted;
     }
 
+    .agent-activity {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+
     .sources {
         height: auto;
         margin: 0 0 1 2;
-        padding: 0 0 0 2;
+        padding: 0;
         border-left: solid $secondary 55%;
         color: $text-muted;
+    }
+
+    /* Collapsible sources: flat rows on the chat background, no surface card. */
+    .sources .source-item {
+        background: $background;
+        border-top: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    .sources CollapsibleTitle {
+        color: $secondary;
+        padding: 0 1;
+    }
+
+    .source-meta {
+        color: $text-muted;
+        padding: 0 0 1 2;
+    }
+
+    .source-context {
+        color: $foreground 85%;
+        padding: 0 0 1 2;
     }
 
     .notice {
@@ -690,13 +799,39 @@ class ArtemisTUI(App):
         chat.anchor()
         msg_widget: Optional[ArtemisMessage] = None
         stream = None
+        activity: Optional[AgentActivity] = None
 
         response = ""
         metadata: Optional[Dict[str, Dict[str, Any]]] = None
         in_tokens = out_tokens = 0
 
+        def on_progress(event: Dict[str, Any]) -> None:
+            # Core fires this from the (event-loop) agent phase, so touching
+            # widgets here is safe. Builds and updates the live AgentActivity.
+            nonlocal activity
+            if event.get("type") == "agents_started":
+                agents = event.get("agents") or []
+                if not agents or activity is not None:
+                    return
+                activity = AgentActivity(agents)
+                thinking.display = False  # kept mounted; _drop_pending removes it
+                chat.mount(activity)
+                chat.scroll_end(animate=False)
+            elif event.get("type") == "agent_done" and activity is not None:
+                activity.set_state(event.get("agent"), event.get("status", "done"))
+
+        async def _drop_pending() -> None:
+            nonlocal activity
+            if thinking.is_mounted:
+                await thinking.remove()
+            if activity is not None and activity.is_mounted:
+                await activity.remove()
+                activity = None
+
         try:
-            async for chunk, meta, it, ot in self.core.get_ai_response(text):
+            async for chunk, meta, it, ot in self.core.get_ai_response(
+                text, progress_callback=on_progress
+            ):
                 if meta:
                     metadata = meta
                 if it:
@@ -705,8 +840,7 @@ class ArtemisTUI(App):
                     out_tokens = ot
                 if chunk:
                     if msg_widget is None:
-                        if thinking.is_mounted:
-                            await thinking.remove()
+                        await _drop_pending()
                         chat.mount(ArtemisLabel())
                         msg_widget = ArtemisMessage()
                         chat.mount(msg_widget)
@@ -718,7 +852,7 @@ class ArtemisTUI(App):
                 await stream.stop()
 
             if metadata:
-                panel = SourcesPanel(metadata)
+                panel = SourcesPanel(metadata, self.core.last_agent_contexts)
                 if panel.display:
                     chat.mount(panel)
 
@@ -742,8 +876,7 @@ class ArtemisTUI(App):
             # every subsequent message — and the spinner leaked, still ticking.
             # _busy is cleared first (synchronous, guaranteed) before any await.
             self._busy = False
-            if thinking.is_mounted:
-                await thinking.remove()
+            await _drop_pending()
 
     # -- Commands --------------------------------------------------------
 

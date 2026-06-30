@@ -40,7 +40,7 @@ Examples:
 | `URLReader` | `bool(extract_urls(text))` — binary, no judgement → **no LLM call**. |
 | `FileReader` | regex + filesystem check — binary → **no LLM call**. |
 | `News` | bang-command lookup (`!news`, `!games`, `!finance`) — binary → **no LLM call**. |
-| `OnlineSearch` | bangs and URLs short-circuit to `False` first, then **LLM call** *"do you need to search?"* — judgement required. |
+| `OnlineSearch` | `!search`/`!web` forces `True` (binary); other bangs and URLs short-circuit to `False`; otherwise **LLM call** *"do you need to search?"* (conservative, default no) — judgement required. |
 | `LangDetect` | always-on; decision is degenerate (returns `True`). Execution does the LLM call. |
 | `PersonalInfo` | LLM call *"is there memorable personal info here?"* — judgement required. |
 | `HueLights` | keyword regex short-circuits, then **LLM call** *"is this a light-control command?"* — judgement required. |
@@ -62,6 +62,7 @@ class Agent:
             _config.agent_llm,
             reasoning_effort=_config.agent_ro,
             context=name,
+            system_prompt=_config.agent_shared_context,
         )
         self.metadata: Dict[str, Any] = {}
 
@@ -140,7 +141,7 @@ Look at how the built-ins gate work:
 | `URLReader` | `bool(extract_urls(user_input))` — pure regex, free. |
 | `FileReader` | Regex filename match + filesystem existence check. |
 | `News` | Bang-command lookup: `!news`, `!games`, `!finance`. |
-| `OnlineSearch` | Cheap exclusions first (bang, URL present, news request) — only then an LLM yes/no. |
+| `OnlineSearch` | `!search`/`!web` force; cheap exclusions (other bangs, URL present) skip — only then an LLM yes/no (conservative). |
 
 The pattern: free signals first, paid signals last. Don't burn an agent LLM call on every keystroke if a regex can answer.
 
@@ -171,6 +172,10 @@ self.llm.summarize(text, max_words=200)                         # convenience
 ```
 
 Costs are tracked per-context (the `context` kwarg defaults to the agent's name). Use `/cost` in the TUI to see the breakdown.
+
+### Shared agent context
+
+Every agent's `self.llm` is constructed with `system_prompt=_config.agent_shared_context`. That constant is the one operating frame shared by all agents: it states that you are background enrichment inside Artemis, that your output is injected for one turn and never shown to the user verbatim, and that you should contribute only what genuinely helps and answer yes/no or JSON questions exactly. It is applied automatically as the system prompt on `generate_single_response` and `summarize` whenever the call doesn't pass its own `system_prompt`, so you never repeat it in per-agent prompts — put only the agent-specific task in your prompt. To change the frame for all agents, edit `agent_shared_context` in `_config.py`.
 
 ## Configuration
 

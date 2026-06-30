@@ -51,7 +51,8 @@ class LLMInterface:
         timeout: Optional[int] = None,
         retry_attempts: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        system_prompt: Optional[str] = None,
     ):
         self.model = model or _config.llm
         self.timeout = timeout if timeout is not None else _config.llm_timeout
@@ -59,6 +60,10 @@ class LLMInterface:
         self.streaming = _config.streaming
         self.reasoning_effort = reasoning_effort or _config.ro
         self.context = context or "main"
+        # Prepended to generate_single_response / summarize calls that don't pass
+        # their own system_prompt. Agents set this to _config.agent_shared_context
+        # so every agent call carries the same operating frame.
+        self.default_system_prompt = system_prompt
 
         self._is_reasoning_model = self._check_reasoning_support()
 
@@ -129,6 +134,8 @@ class LLMInterface:
         Yields {'content': str} for each text delta.
         Yields {'usage': {'input_tokens': N, 'output_tokens': M}} once per call
         when the provider returns final usage (typically at end-of-stream).
+        Yields {'error': str} if streaming fails mid-flight, so the caller can
+        surface the failure without mistaking it for model output.
         Records usage automatically against this interface's cost context.
         """
         try:
@@ -174,7 +181,7 @@ class LLMInterface:
             raise
         except Exception as e:
             logger.error(f"Error in stream_content: {e}")
-            yield {'content': f"\n[Error: {e}]"}
+            yield {'error': str(e)}
 
     def generate_single_response(
         self,
@@ -183,10 +190,14 @@ class LLMInterface:
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
     ) -> str:
-        """Generate a single complete response (non-streaming)."""
+        """Generate a single complete response (non-streaming).
+
+        Falls back to this interface's default_system_prompt (the shared agent
+        context, for agent instances) when the caller passes none.
+        """
         response = self._call(
             messages=[{"role": "user", "content": prompt}],
-            system_prompt=system_prompt,
+            system_prompt=system_prompt if system_prompt is not None else self.default_system_prompt,
             max_tokens=max_tokens,
             stream=False,
             temperature=temperature,

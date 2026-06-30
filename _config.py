@@ -103,8 +103,12 @@ summarize_fetched_content = False
 # the agent disabled (the bridge connection fails and is caught at startup).
 hueip = os.getenv("HUE_BRIDGE_IP", "")
 
-# Max search results per query (OnlineSearchAgent)
-max_search_results = 3
+# Search results per query (OnlineSearchAgent). The planner LLM chooses a value
+# in [1, search_max_results_per_query]; search_default_results is the fallback
+# when it doesn't specify one. Each chosen result is fetched and extracted in
+# full, so this is the main bound on per-turn fetch volume and latency.
+search_max_results_per_query = 10
+search_default_results = 5
 
 # Max tokens for search context (OnlineSearchAgent)
 # Limits total tokens from all search results to prevent context overflow
@@ -368,3 +372,20 @@ Before responding in our chat, classify the type of message (for internal use, D
 - Maintain your distinct personality throughout our conversation
 - Use information from our previous exchanges to create continuity
 """
+
+
+# ============================================================================
+# SHARED AGENT CONTEXT
+# ============================================================================
+
+# Injected as the system prompt for EVERY agent LLM call (both the decision and
+# the execution call). Gives every agent the same operating frame; each agent's
+# own task instruction rides in the user message on top of this.
+agent_shared_context = """You are a background enrichment component inside Artemis, a terminal AI assistant holding an ongoing conversation with a single user.
+
+You are one of several independent agents that run in parallel on each turn. Your output is injected as labeled background context into the main assistant's prompt for THIS turn only; the user never sees it directly, and the main assistant weighs it by relevance. Nothing you emit is shown to the user verbatim.
+
+Operate accordingly:
+- Contribute only what is accurate and genuinely useful for answering this turn. Silence beats noise.
+- Be precise, factual, and terse. Never fabricate or pad.
+- When the task asks for a yes/no or a structured (JSON) answer, return exactly that and nothing else: no preamble, no explanation, no code fences."""

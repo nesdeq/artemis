@@ -60,6 +60,7 @@ class Agent:
             _config.agent_llm,
             reasoning_effort=_config.agent_ro,
             context=name,
+            system_prompt=_config.agent_shared_context,
         )
         # Every agent MUST populate this. Surfaced in the sources panel.
         self.metadata: Dict[str, Any] = {}
